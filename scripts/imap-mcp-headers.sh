@@ -41,10 +41,11 @@ for v in IMAP_MCP_TOKEN IMAP_USER IMAP_PASSWORD; do
 	fi
 done
 
-jq -n \
-	--arg auth "Bearer $IMAP_MCP_TOKEN" \
-	--arg user "$IMAP_USER" \
-	--arg pass "$IMAP_PASSWORD" \
-	--arg host "${IMAP_HOST:-}" \
-	'{"Authorization": $auth, "X-IMAP-Username": $user, "X-IMAP-Password": $pass}
-	 + (if $host != "" then {"X-IMAP-Host": $host} else {} end)'
+# The values reach jq through its environment, not its arguments, so they
+# never show in the process list. jq escapes them for JSON.
+IMAP_MCP_H_AUTH="Bearer $IMAP_MCP_TOKEN" \
+	IMAP_MCP_H_USER="$IMAP_USER" \
+	IMAP_MCP_H_PASS="$IMAP_PASSWORD" \
+	IMAP_MCP_H_HOST="$IMAP_HOST" \
+	jq -n '{"Authorization": $ENV.IMAP_MCP_H_AUTH, "X-IMAP-Username": $ENV.IMAP_MCP_H_USER, "X-IMAP-Password": $ENV.IMAP_MCP_H_PASS}
+	 + (if $ENV.IMAP_MCP_H_HOST != "" then {"X-IMAP-Host": $ENV.IMAP_MCP_H_HOST} else {} end)'

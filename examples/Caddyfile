@@ -7,10 +7,21 @@
 # (In Docker on a shared network, use IMAP_MCP_LISTEN=0.0.0.0:8787,
 #  IMAP_MCP_INSECURE_HTTP=true and `reverse_proxy imap-mcp:8787`.)
 #
-# Every request carries the IMAP password in a header. Do not enable
-# request logging that records headers. Caddy's access log ("log" directive)
-# writes request headers, so this file has no "log" directive. If you need
-# an access log, delete the secret headers from it, as shown below.
+# Every request carries the IMAP password in a header, so Caddy must never
+# log request headers. Caddy's default logger writes the full request,
+# headers included, in error entries (for example "dial tcp ... connection
+# refused" when imap-mcp is down). It hides Authorization and Cookie, but
+# not X-IMAP-Password. The global block below removes the request headers
+# from every entry of the default logger. This site has no access log
+# ("log" directive). If you add one, give it the same filter.
+
+{
+	log default {
+		format filter {
+			request>headers delete
+		}
+	}
+}
 
 mail-mcp.example.com {
 	# Uploads: keep at or above IMAP_MCP_MAX_UPLOAD plus multipart overhead.
@@ -23,13 +34,10 @@ mail-mcp.example.com {
 		flush_interval -1
 	}
 
-	# Optional access log without secrets. Uncomment only together with
-	# the filter below.
+	# Optional access log. Uncomment only together with the filter.
 	# log {
 	# 	format filter {
-	# 		request>headers>Authorization delete
-	# 		request>headers>X-Imap-Password delete
-	# 		request>headers>X-Imap-Username delete
+	# 		request>headers delete
 	# 	}
 	# }
 }

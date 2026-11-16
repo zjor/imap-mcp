@@ -146,6 +146,14 @@ On a server, clients always talk to imap-mcp over HTTPS. The recommended setup i
 2. Put Caddy in front, with the example `Caddyfile` and your domain:
 
    ```
+   {
+   	log default {
+   		format filter {
+   			request>headers delete
+   		}
+   	}
+   }
+
    mail-mcp.example.com {
    	request_body {
    		max_size 30MB
@@ -156,7 +164,7 @@ On a server, clients always talk to imap-mcp over HTTPS. The recommended setup i
    }
    ```
 
-   **The proxy must not log request headers.** They carry the IMAP password. Caddy's access log writes request headers and hides only a few standard ones, such as `Authorization` and `Cookie`. So the example has no access log. If you need one, use the header filter shown in the example file. The same rule applies to nginx or any other proxy.
+   **The proxy must not log request headers.** They carry the IMAP password. Caddy hides only a few standard headers, such as `Authorization` and `Cookie`. It writes all other headers, including `X-IMAP-Password`, into its logs. This happens even without an access log: the default logger writes the full request in error entries, for example when imap-mcp is down. The global `log default` block in the example removes the request headers from every entry of the default logger. The example has no access log. If you add one, give it the same filter, as shown in the example file. The same rule applies to nginx or any other proxy.
 
 3. Each user points their client at `https://mail-mcp.example.com/mcp`, with their own token and their own IMAP login in `.env.local`.
 
