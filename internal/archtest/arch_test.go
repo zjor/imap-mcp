@@ -85,7 +85,8 @@ func TestOnlyImapsafeImportsIMAPClient(t *testing.T) {
 		if path != "github.com/emersion/go-imap/v2/imapclient" {
 			return
 		}
-		if !strings.HasPrefix(file, "internal/imapsafe/") {
+		// Integration tests under test/ seed mailboxes with a raw client.
+		if !strings.HasPrefix(file, "internal/imapsafe/") && !strings.HasPrefix(file, "test/") {
 			t.Errorf("%s imports imapclient; only internal/imapsafe may", file)
 		}
 	})

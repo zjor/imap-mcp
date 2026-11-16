@@ -1,0 +1,17 @@
+# Dovecot for integration tests. Run via `make it`.
+# dovecot/dovecot 2.3.x images are published for amd64 only, so the
+# platform is fixed; on arm64 hosts Docker runs it under emulation.
+services:
+  dovecot:
+    image: dovecot/dovecot:2.3.21.1
+    platform: linux/amd64
+    ports:
+      - "127.0.0.1:10993:993"
+    volumes:
+      - ./dovecot/dovecot.conf:/etc/dovecot/dovecot.conf:ro
+      - ./certs:/etc/dovecot/certs:ro
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/993"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
