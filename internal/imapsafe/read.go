@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"mime/quotedprintable"
 	"slices"
 	"strings"
@@ -78,8 +79,13 @@ type Summary struct {
 	HasAttachments bool
 	// Snippet is the first 2048 bytes of BODY[TEXT], exactly as stored:
 	// still transfer-encoded and, for multipart mail, with MIME boundaries
-	// and part headers. Callers decode it.
+	// and part headers. Callers decode it with ContentType and Encoding.
 	Snippet []byte
+	// ContentType is the top-level media type with its parameters (charset,
+	// boundary), formatted as a Content-Type header value. Encoding is the
+	// top-level Content-Transfer-Encoding (lower case). Both come from
+	// BODYSTRUCTURE and are empty when it is missing.
+	ContentType, Encoding string
 }
 
 // ListFolders runs LIST and then one STATUS (MESSAGES UNSEEN) per
@@ -288,6 +294,16 @@ func toCriteria(c SearchCriteria) *imap.SearchCriteria {
 // BODY.PEEK[TEXT]<0.2048> for uids in folder. The result follows the order
 // of uids; UIDs that no longer exist are left out.
 func (s *Session) FetchSummaries(ctx context.Context, folder string, uids []uint32) ([]Summary, error) {
+	return s.fetchSummaries(ctx, folder, uids, true)
+}
+
+// FetchEnvelopes is FetchSummaries with ENVELOPE and INTERNALDATE only:
+// Unread, HasAttachments, Snippet, ContentType and Encoding stay empty.
+func (s *Session) FetchEnvelopes(ctx context.Context, folder string, uids []uint32) ([]Summary, error) {
+	return s.fetchSummaries(ctx, folder, uids, false)
+}
+
+func (s *Session) fetchSummaries(ctx context.Context, folder string, uids []uint32, full bool) ([]Summary, error) {
 	if err := s.ready(ctx); err != nil {
 		return nil, err
 	}
@@ -306,15 +322,14 @@ func (s *Session) FetchSummaries(ctx context.Context, folder string, uids []uint
 		Peek:      true,
 		Partial:   &imap.SectionPartial{Offset: 0, Size: snippetBytes},
 	}
+	opts := &imap.FetchOptions{UID: true, Envelope: true, InternalDate: true}
+	if full {
+		opts.Flags = true
+		opts.BodyStructure = &imap.FetchItemBodyStructure{Extended: true}
+		opts.BodySection = []*imap.FetchItemBodySection{snippet}
+	}
 	start := time.Now()
-	msgs, err := s.c.Fetch(set, &imap.FetchOptions{
-		UID:           true,
-		Envelope:      true,
-		Flags:         true,
-		InternalDate:  true,
-		BodyStructure: &imap.FetchItemBodyStructure{Extended: true},
-		BodySection:   []*imap.FetchItemBodySection{snippet},
-	}).Collect()
+	msgs, err := s.c.Fetch(set, opts).Collect()
 	logCmd(logging.From(ctx), "UID FETCH", folder, len(uids), start, err)
 	if err != nil {
 		return nil, fmt.Errorf("imap fetch: %w", err)
@@ -330,12 +345,14 @@ func (s *Session) FetchSummaries(ctx context.Context, folder string, uids []uint
 		if !ok {
 			continue
 		}
-		sum := Summary{
-			UID:            u,
-			InternalDate:   m.InternalDate,
-			Unread:         !slices.Contains(m.Flags, imap.FlagSeen),
-			HasAttachments: m.BodyStructure != nil && hasAttachments(m.BodyStructure),
-			Snippet:        m.FindBodySection(snippet),
+		sum := Summary{UID: u, InternalDate: m.InternalDate}
+		if full {
+			sum.Unread = !slices.Contains(m.Flags, imap.FlagSeen)
+			sum.Snippet = m.FindBodySection(snippet)
+			if m.BodyStructure != nil {
+				sum.HasAttachments = hasAttachments(m.BodyStructure)
+				sum.ContentType, sum.Encoding = topType(m.BodyStructure)
+			}
 		}
 		if e := m.Envelope; e != nil {
 			sum.Date = e.Date
@@ -358,6 +375,21 @@ func toAddrs(in []imap.Address) []Address {
 		out = append(out, Address{Name: a.Name, Addr: a.Addr()})
 	}
 	return out
+}
+
+// topType returns the top-level Content-Type value (with charset or
+// boundary) and transfer encoding from BODYSTRUCTURE.
+func topType(bs imap.BodyStructure) (contentType, encoding string) {
+	var params map[string]string
+	switch b := bs.(type) {
+	case *imap.BodyStructureSinglePart:
+		params, encoding = b.Params, strings.ToLower(b.Encoding)
+	case *imap.BodyStructureMultiPart:
+		if b.Extended != nil {
+			params = b.Extended.Params
+		}
+	}
+	return mime.FormatMediaType(bs.MediaType(), params), encoding
 }
 
 func hasAttachments(bs imap.BodyStructure) bool {
