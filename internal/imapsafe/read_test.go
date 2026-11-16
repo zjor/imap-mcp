@@ -278,3 +278,24 @@ func TestDecodeTransfer(t *testing.T) {
 		})
 	}
 }
+
+func TestDecodeParam(t *testing.T) {
+	tests := []struct {
+		name   string
+		params map[string]string
+		want   string
+	}{
+		{"plain", map[string]string{"filename": "a.pdf"}, "a.pdf"},
+		{"rfc2231", map[string]string{"filename*": "UTF-8''Faktura%20%C4%8D.pdf"}, "Faktura č.pdf"},
+		{"continuation", map[string]string{"filename*0*": "UTF-8''Fak", "filename*1": "tura.pdf"}, "Faktura.pdf"},
+		{"rfc2047", map[string]string{"filename": "=?UTF-8?Q?Faktura_=C4=8D.pdf?="}, "Faktura č.pdf"},
+		{"absent", map[string]string{"other": "x"}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := decodeParam(tt.params, "filename"); got != tt.want {
+				t.Errorf("decodeParam = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

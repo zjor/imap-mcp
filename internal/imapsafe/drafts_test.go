@@ -150,7 +150,7 @@ func TestNoWriteOutsideDrafts(t *testing.T) {
 			"AppendDraft", "Caps", "Close", "Examine", "FetchEnvelopes",
 			"FetchPart", "FetchRaw", "FetchSummaries", "FindDraft",
 			"Folders", "HasAttachments", "ListDrafts", "ListFolders",
-			"RemoveOwnDraft", "Search", "SearchHeader", "Thread",
+			"PartInfo", "RemoveOwnDraft", "Search", "SearchHeader", "Thread",
 		}
 		typ := reflect.TypeOf(&Session{})
 		var got []string

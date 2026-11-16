@@ -14,6 +14,7 @@ import (
 
 	"github.com/zjor/imap-mcp/internal/auth"
 	"github.com/zjor/imap-mcp/internal/config"
+	"github.com/zjor/imap-mcp/internal/files"
 	"github.com/zjor/imap-mcp/internal/imapsafe"
 	"github.com/zjor/imap-mcp/internal/logging"
 	"github.com/zjor/imap-mcp/internal/tools"
@@ -39,12 +40,15 @@ func New(cfg config.Config, logger *slog.Logger) (http.Handler, error) {
 func NewWithDialer(cfg config.Config, logger *slog.Logger, d *imapsafe.Dialer) http.Handler {
 	return newHandler(cfg, logger, func(s *mcp.Server) {
 		tools.Register(s, tools.Deps{Dialer: d, PublicURL: cfg.PublicURL})
+	}, func(mux *http.ServeMux) {
+		mux.Handle("/attachments/{id}", files.DownloadHandler(d))
 	})
 }
 
 // newHandler builds the chain logging → auth (not for /healthz) → mux.
-// register adds the tools to the MCP server.
-func newHandler(cfg config.Config, logger *slog.Logger, register func(*mcp.Server)) http.Handler {
+// register adds the tools to the MCP server. Each mount adds routes to the
+// authenticated mux.
+func newHandler(cfg config.Config, logger *slog.Logger, register func(*mcp.Server), mounts ...func(*http.ServeMux)) http.Handler {
 	ms := mcp.NewServer(&mcp.Implementation{Name: serverName, Version: serverVersion}, nil)
 	register(ms)
 	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return ms }, &mcp.StreamableHTTPOptions{
@@ -57,6 +61,9 @@ func newHandler(cfg config.Config, logger *slog.Logger, register func(*mcp.Serve
 
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", mcpHandler)
+	for _, m := range mounts {
+		m(mux)
+	}
 
 	root := http.NewServeMux()
 	root.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {

@@ -498,29 +498,93 @@ func (s *Session) FetchPart(ctx context.Context, id ids.AttachmentID) (r io.Read
 // partEncoding returns the Content-Transfer-Encoding of id.Part from
 // BODYSTRUCTURE (lower case).
 func (s *Session) partEncoding(ctx context.Context, id ids.AttachmentID) (string, error) {
+	sp, err := s.partStructure(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	return strings.ToLower(sp.Encoding), nil
+}
+
+// PartInfo returns the raw file name and the media type (type/subtype, lower
+// case) of id.Part from BODYSTRUCTURE. Both come from the sender: the caller
+// must clean them. It is a read-only UID FETCH BODYSTRUCTURE and errors as
+// FetchPart does.
+func (s *Session) PartInfo(ctx context.Context, id ids.AttachmentID) (filename, mediaType string, err error) {
+	if err := s.open(ctx, id.MessageID); err != nil {
+		return "", "", err
+	}
+	sp, err := s.partStructure(ctx, id)
+	if err != nil {
+		return "", "", err
+	}
+	return partFilename(sp), strings.ToLower(sp.MediaType()), nil
+}
+
+// partFilename returns the file name of sp: the disposition "filename", else
+// the type "name". BODYSTRUCTURE keeps RFC 2231 parameters (filename*,
+// filename*0*) undecoded, so decodeParam decodes them.
+func partFilename(sp *imap.BodyStructureSinglePart) string {
+	if sp.Extended != nil && sp.Extended.Disposition != nil {
+		if n := decodeParam(sp.Extended.Disposition.Params, "filename"); n != "" {
+			return n
+		}
+	}
+	return decodeParam(sp.Params, "name")
+}
+
+// decodeParam joins and decodes the RFC 2231 forms of key with a header
+// parser. A plain value may be an RFC 2047 encoded word.
+func decodeParam(params map[string]string, key string) string {
+	var b strings.Builder
+	b.WriteString("x")
+	for k, v := range params {
+		switch {
+		case k == key:
+			fmt.Fprintf(&b, "; %s=%q", k, v)
+		case strings.HasPrefix(k, key+"*"):
+			if strings.HasSuffix(k, "*") {
+				fmt.Fprintf(&b, "; %s=%s", k, v) // percent-encoded, token-safe
+			} else {
+				fmt.Fprintf(&b, "; %s=%q", k, v)
+			}
+		}
+	}
+	_, got, err := mime.ParseMediaType(b.String())
+	if err != nil {
+		return ""
+	}
+	name := got[key]
+	if dec, err := new(mime.WordDecoder).DecodeHeader(name); err == nil {
+		name = dec
+	}
+	return name
+}
+
+// partStructure returns the single part id.Part from BODYSTRUCTURE, or
+// ErrNotFound.
+func (s *Session) partStructure(ctx context.Context, id ids.AttachmentID) (*imap.BodyStructureSinglePart, error) {
 	start := time.Now()
 	msgs, err := s.c.Fetch(imap.UIDSetNum(imap.UID(id.UID)), &imap.FetchOptions{
 		BodyStructure: &imap.FetchItemBodyStructure{Extended: true},
 	}).Collect()
 	logCmd(logging.From(ctx), "UID FETCH", id.Folder, 1, start, err)
 	if err != nil {
-		return "", fmt.Errorf("imap fetch: %w", err)
+		return nil, fmt.Errorf("imap fetch: %w", err)
 	}
 	if len(msgs) == 0 || msgs[0].BodyStructure == nil {
-		return "", ErrNotFound
+		return nil, ErrNotFound
 	}
-	var enc string
-	found := false
+	var found *imap.BodyStructureSinglePart
 	msgs[0].BodyStructure.Walk(func(path []int, part imap.BodyStructure) bool {
 		if sp, ok := part.(*imap.BodyStructureSinglePart); ok && slices.Equal(path, id.Part) {
-			enc, found = strings.ToLower(sp.Encoding), true
+			found = sp
 		}
-		return !found
+		return found == nil
 	})
-	if !found {
-		return "", ErrNotFound
+	if found == nil {
+		return nil, ErrNotFound
 	}
-	return enc, nil
+	return found, nil
 }
 
 // open checks the session and opens id.Folder; ErrStale on a UIDVALIDITY
