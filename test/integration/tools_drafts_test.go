@@ -498,3 +498,56 @@ func TestDraftToolDescriptions_SayNoSending(t *testing.T) {
 		t.Errorf("found %d of 4 draft tools", found)
 	}
 }
+
+// update_draft and an upload rewrite the own draft only. A foreign message
+// flagged \Deleted (not expunged) and a foreign draft without the marker
+// stay as they were, and the \Deleted flag stays set (spec 10).
+func TestDraftWrites_LeaveForeignDraftsAlone(t *testing.T) {
+	c := freshUser(t)
+	foreignRaw := [][]byte{
+		[]byte("From: me@example.com\r\nSubject: deleted by my client\r\n\r\nold\r\n"),
+		[]byte("From: me@example.com\r\nSubject: my own draft\r\n\r\nwork in progress\r\n"),
+	}
+	foreign := seedMsgs(t, c, draftsFolder,
+		seedMsg{raw: foreignRaw[0], flags: []imap.Flag{imap.FlagDraft}},
+		seedMsg{raw: foreignRaw[1], flags: []imap.Flag{imap.FlagDraft}})
+	cl := rawClient(t, c)
+	if _, err := cl.Select(draftsFolder, nil).Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if err := cl.Store(imap.UIDSetNum(imap.UID(foreign[0])), &imap.StoreFlags{
+		Op: imap.StoreFlagsAdd, Silent: true, Flags: []imap.Flag{imap.FlagDeleted},
+	}, nil).Close(); err != nil {
+		t.Fatal(err)
+	}
+	cl.Logout().Wait()
+	cl.Close()
+
+	srv := startServer(t)
+	cs := srv.connect(t, c)
+	var d draftOut
+	mustCall(t, cs, "create_draft", map[string]any{"mode": "new", "to": []string{"bob@example.com"}, "subject": "Offer", "body_text": "Hi"}, &d)
+	mustCall(t, cs, "update_draft", map[string]any{"draft_id": d.DraftID, "subject": "Offer v2"}, nil)
+	decodeUpload(t, srv.upload(t, c, d.DraftID, filePart("a.txt", "text/plain", "hello")))
+
+	own, _ := ownDraftRaw(t, c, d.DraftID)
+	if uids := rawUIDs(t, c, draftsFolder); !slices.Equal(uids, []uint32{foreign[0], foreign[1], own}) {
+		t.Fatalf("Drafts UIDs = %v, want %v and the own draft %d", uids, foreign, own)
+	}
+	cl = rawClient(t, c)
+	defer cl.Close()
+	if _, err := cl.Select(draftsFolder, &imap.SelectOptions{ReadOnly: true}).Wait(); err != nil {
+		t.Fatal(err)
+	}
+	for i, uid := range foreign {
+		if got := rawMessage(t, cl, uid); !bytes.Equal(got, foreignRaw[i]) {
+			t.Errorf("foreign message %d changed: %q", uid, got)
+		}
+	}
+	if !slices.Contains(rawFlags(t, c, draftsFolder, foreign[0]), imap.FlagDeleted) {
+		t.Error("foreign message lost \\Deleted")
+	}
+	if slices.Contains(rawFlags(t, c, draftsFolder, foreign[1]), imap.FlagDeleted) {
+		t.Error("foreign draft got \\Deleted")
+	}
+}

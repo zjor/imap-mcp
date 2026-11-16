@@ -623,13 +623,15 @@ func TestParallelCalls_TenAtOnce(t *testing.T) {
 	}
 }
 
-func TestNoAuth_401(t *testing.T) {
-	// A listener posing as the IMAP server counts connection attempts.
+// fakeIMAP is a listener posing as an IMAP server. It counts connection
+// attempts and closes each one.
+func fakeIMAP(t *testing.T) (string, *atomic.Int64) {
+	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
+	t.Cleanup(func() { ln.Close() })
 	var dials atomic.Int64
 	go func() {
 		for {
@@ -641,7 +643,12 @@ func TestNoAuth_401(t *testing.T) {
 			conn.Close()
 		}
 	}()
-	srv := startServer(t, ln.Addr().String())
+	return ln.Addr().String(), &dials
+}
+
+func TestNoAuth_401(t *testing.T) {
+	addr, dials := fakeIMAP(t)
+	srv := startServer(t, addr)
 
 	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_folders","arguments":{}}}`
 	for _, tc := range []struct {
@@ -669,5 +676,44 @@ func TestNoAuth_401(t *testing.T) {
 	}
 	if n := dials.Load(); n != 0 {
 		t.Errorf("%d IMAP connections before auth", n)
+	}
+}
+
+// With two allowed hosts, a request for any other host gets 403 on the
+// tool endpoint and on both file endpoints, before any IMAP connection.
+func TestHostNotAllowed_403(t *testing.T) {
+	addrA, dialsA := fakeIMAP(t)
+	addrB, dialsB := fakeIMAP(t)
+	srv := startServer(t, addrA, addrB)
+
+	aid := ids.EncodeAttachment(ids.AttachmentID{MessageID: ids.MessageID{Folder: "INBOX", UIDValidity: 1, UID: 1}, Part: []int{2}})
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_folders","arguments":{}}}`
+	for _, tc := range []struct{ method, path, body string }{
+		{"POST", "/mcp", body},
+		{"GET", "/attachments/" + aid, ""},
+		{"POST", "/drafts/" + ids.NewDraftID() + "/attachments", ""},
+	} {
+		for _, host := range []string{"", "evil.example.net:993"} {
+			req, _ := http.NewRequest(tc.method, srv.URL+tc.path, strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Accept", "application/json, text/event-stream")
+			req.Header.Set("Authorization", "Bearer "+testToken)
+			req.Header.Set("X-IMAP-Username", "u")
+			req.Header.Set("X-IMAP-Password", "p")
+			if host != "" {
+				req.Header.Set("X-IMAP-Host", host)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusForbidden {
+				t.Errorf("%s %s host %q: status %d, want 403", tc.method, tc.path, host, resp.StatusCode)
+			}
+		}
+	}
+	if n := dialsA.Load() + dialsB.Load(); n != 0 {
+		t.Errorf("%d IMAP connections for a host not allowed", n)
 	}
 }
