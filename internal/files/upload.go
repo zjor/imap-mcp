@@ -47,7 +47,7 @@ func upload(d *imapsafe.Dialer, maxUpload int64, w http.ResponseWriter, r *http.
 	}
 	draftID := r.PathValue("draft_id")
 	if err := ids.CheckDraftID(draftID); err != nil {
-		fail(ctx, w, "upload.failed", err)
+		fail(ctx, w, "upload", err, "draft_id", draftID)
 		return
 	}
 	creds, ok := auth.CredentialsFrom(ctx)
@@ -70,33 +70,40 @@ func upload(d *imapsafe.Dialer, maxUpload int64, w http.ResponseWriter, r *http.
 		var mbe *http.MaxBytesError
 		switch {
 		case errors.As(err, &mbe):
+			logging.From(ctx).Warn("upload.rejected", "status", http.StatusRequestEntityTooLarge, "code", "too_large",
+				"draft_id", draftID, "limit", maxUpload)
 			writeError(ctx, w, http.StatusRequestEntityTooLarge, "too_large", "upload is larger than the server accepts")
 		case ctx.Err() != nil:
 			logging.From(ctx).Warn("upload.aborted", "draft_id", draftID, "error", err.Error())
 		default:
-			fail(ctx, w, "upload.failed", err)
+			fail(ctx, w, "upload", err, "draft_id", draftID)
 		}
 		return
 	}
 
 	s, err := d.Open(ctx, creds)
 	if err != nil {
-		fail(ctx, w, "upload.failed", err)
+		fail(ctx, w, "upload", err, "draft_id", draftID)
 		return
 	}
 	defer s.Close()
 	res, err := tools.AddAttachments(ctx, s, draftID, files)
 	if err != nil {
-		fail(ctx, w, "upload.failed", err)
+		fail(ctx, w, "upload", err, "draft_id", draftID)
 		return
 	}
 
 	var total int64
+	names := make([]string, 0, len(files))
+	sizes := make([]int64, 0, len(files))
 	for _, f := range files {
 		total += f.Size
+		names = append(names, f.Filename)
+		sizes = append(sizes, f.Size)
 	}
-	logging.From(ctx).Info("draft.attachments_added", "draft_id", draftID, "files", len(files),
-		"size", total, "draft_size", res.Size, "duration_ms", time.Since(start).Milliseconds())
+	logging.From(ctx).Info("draft.attachments_added", "draft_id", draftID, "old_uid", res.OldUID, "uid", res.UID,
+		"files", len(files), "filenames", names, "file_sizes", sizes, "size", total, "draft_size", res.Size,
+		"duration_ms", time.Since(start).Milliseconds())
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	_ = json.NewEncoder(w).Encode(uploadOut{DraftID: draftID, Attachments: res.Attachments, Warning: res.Warning})

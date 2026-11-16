@@ -41,7 +41,7 @@ func download(d *imapsafe.Dialer, w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := ids.DecodeAttachment(r.PathValue("id"))
 	if err != nil {
-		fail(ctx, w, "attachment.failed", err)
+		fail(ctx, w, "attachment", err)
 		return
 	}
 	creds, ok := auth.CredentialsFrom(ctx)
@@ -53,14 +53,14 @@ func download(d *imapsafe.Dialer, w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	s, err := d.Open(ctx, creds)
 	if err != nil {
-		fail(ctx, w, "attachment.failed", err)
+		fail(ctx, w, "attachment", err, "message_uid", id.UID)
 		return
 	}
 	defer s.Close()
 
 	name, mediaType, err := s.PartInfo(ctx, id)
 	if err != nil {
-		fail(ctx, w, "attachment.failed", err)
+		fail(ctx, w, "attachment", err, "message_uid", id.UID)
 		return
 	}
 
@@ -69,7 +69,7 @@ func download(d *imapsafe.Dialer, w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		body, size, err = s.FetchPart(ctx, id)
 		if err != nil {
-			fail(ctx, w, "attachment.failed", err)
+			fail(ctx, w, "attachment", err, "message_uid", id.UID)
 			return
 		}
 		// Runs before s.Close: the session is busy until the stream closes.
@@ -126,9 +126,11 @@ func partPath(part []int) string {
 	return strings.Join(s, ".")
 }
 
-// fail answers with the tool error shape and the matching HTTP status. It
-// logs unexpected errors as event.
-func fail(ctx context.Context, w http.ResponseWriter, event string, err error) {
+// fail answers with the tool error shape and the matching HTTP status.
+// It logs rejected requests (spec 7.8: 401, 403, 409, 413) as warn
+// "<kind>.rejected" and unexpected errors as error "<kind>.failed", with
+// attrs added.
+func fail(ctx context.Context, w http.ResponseWriter, kind string, err error, attrs ...any) {
 	if ctx.Err() != nil {
 		return // client is gone
 	}
@@ -148,8 +150,14 @@ func fail(ctx context.Context, w http.ResponseWriter, event string, err error) {
 	case "too_large":
 		status = http.StatusRequestEntityTooLarge
 	}
-	if status == http.StatusBadGateway && !errors.Is(err, imapsafe.ErrUnsupported) {
-		logging.From(ctx).Error(event, "error", err.Error())
+	log := logging.From(ctx)
+	switch status {
+	case http.StatusUnauthorized, http.StatusForbidden, http.StatusConflict, http.StatusRequestEntityTooLarge:
+		log.Warn(kind+".rejected", append([]any{"status", status, "code", code}, attrs...)...)
+	case http.StatusBadGateway:
+		if !errors.Is(err, imapsafe.ErrUnsupported) {
+			log.Error(kind+".failed", append([]any{"error", err.Error()}, attrs...)...)
+		}
 	}
 	writeError(ctx, w, status, code, msg)
 }

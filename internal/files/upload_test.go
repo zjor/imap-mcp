@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/zjor/imap-mcp/internal/imapsafe"
+	"github.com/zjor/imap-mcp/internal/logging"
 	"github.com/zjor/imap-mcp/internal/tools"
 )
 
@@ -99,15 +101,31 @@ func TestReceive(t *testing.T) {
 }
 
 func TestFail_Status(t *testing.T) {
-	for err, want := range map[error]int{
-		imapsafe.ErrNotEditable: http.StatusForbidden,
-		imapsafe.ErrTooLarge:    http.StatusRequestEntityTooLarge,
-		badArg("x"):             http.StatusBadRequest,
-	} {
+	tests := []struct {
+		err    error
+		status int
+		log    string // expected level and event, "" for none
+	}{
+		{imapsafe.ErrNotEditable, http.StatusForbidden, "level=WARN msg=test.rejected"},
+		{imapsafe.ErrTooLarge, http.StatusRequestEntityTooLarge, "level=WARN msg=test.rejected"},
+		{imapsafe.ErrStale, http.StatusConflict, "level=WARN msg=test.rejected"},
+		{errors.New("boom"), http.StatusBadGateway, "level=ERROR msg=test.failed"},
+		{badArg("x"), http.StatusBadRequest, ""},
+	}
+	for _, tt := range tests {
+		var buf bytes.Buffer
+		ctx := logging.With(context.Background(), logging.New(&buf, slog.LevelDebug, "text"))
 		rec := httptest.NewRecorder()
-		fail(context.Background(), rec, "test.failed", err)
-		if rec.Code != want {
-			t.Errorf("%v: status %d, want %d", err, rec.Code, want)
+		fail(ctx, rec, "test", tt.err, "draft_id", "d1")
+		if rec.Code != tt.status {
+			t.Errorf("%v: status %d, want %d", tt.err, rec.Code, tt.status)
+		}
+		logs := buf.String()
+		if tt.log == "" && logs != "" {
+			t.Errorf("%v: logged %q, want nothing", tt.err, logs)
+		}
+		if tt.log != "" && (!strings.Contains(logs, tt.log) || !strings.Contains(logs, "draft_id=d1")) {
+			t.Errorf("%v: log %q, want %q with draft_id", tt.err, logs, tt.log)
 		}
 	}
 }

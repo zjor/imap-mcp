@@ -195,7 +195,7 @@ func createDraft(ctx context.Context, s *imapsafe.Session, deps Deps, in createD
 		}
 	}
 
-	size, err := storeDraft(ctx, s, &input, &sp)
+	_, size, err := storeDraft(ctx, s, &input, &sp)
 	if err != nil {
 		return nil, 0, err
 	}

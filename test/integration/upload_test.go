@@ -109,6 +109,16 @@ func errorOf(t *testing.T, resp *http.Response, status int, code string) {
 	}
 }
 
+// logLine returns the first log line that has event, or "".
+func logLine(logs, event string) string {
+	for _, l := range strings.Split(logs, "\n") {
+		if strings.Contains(l, "msg="+event+" ") {
+			return l
+		}
+	}
+	return ""
+}
+
 func uploadTemps(t *testing.T) int {
 	t.Helper()
 	m, err := filepath.Glob(filepath.Join(os.TempDir(), "imap-mcp-upload-*"))
@@ -164,7 +174,7 @@ func TestUpload_TwoFilesOneRequest(t *testing.T) {
 	if uids := rawUIDs(t, c, draftsFolder); len(uids) != 1 || uids[0] == oldUID {
 		t.Fatalf("Drafts UIDs = %v (old %d), want one new copy", uids, oldUID)
 	}
-	_, raw := ownDraftRaw(t, c, d.DraftID)
+	newUID, raw := ownDraftRaw(t, c, d.DraftID)
 	files := draftAttachments(t, raw)
 	if string(files["report.pdf"]) != reportPDF || string(files["Nabídka č.1.pdf"]) != "PDF-BYTES" ||
 		string(files["notes.txt"]) != "hello" || string(files["blob.zzz"]) != "\x00\x01" || len(files) != 4 {
@@ -175,8 +185,12 @@ func TestUpload_TwoFilesOneRequest(t *testing.T) {
 		t.Errorf("draft = %+v", p)
 	}
 	logs := srv.logs.String()
-	if !strings.Contains(logs, "draft.attachments_added") || !strings.Contains(logs, "files=3") {
-		t.Errorf("no audit line: %s", logs)
+	audit := logLine(logs, "draft.attachments_added")
+	for _, want := range []string{"files=3", "notes.txt", "blob.zzz", "file_sizes=\"[9 5 2]\"", "size=16",
+		"draft_id=" + d.DraftID, fmt.Sprintf("old_uid=%d", oldUID), fmt.Sprintf(" uid=%d", newUID)} {
+		if !strings.Contains(audit, want) {
+			t.Errorf("audit line %q lacks %q", audit, want)
+		}
 	}
 	if strings.Contains(logs, "PDF-BYTES") {
 		t.Error("file content in the log")
@@ -212,6 +226,10 @@ func TestUpload_TooLarge413(t *testing.T) {
 
 	resp := srv.upload(t, c, d.DraftID, upPart{field: "file", filename: "big.bin", body: io.LimitReader(zeros{}, 2<<20)})
 	errorOf(t, resp, 413, "too_large")
+	if l := logLine(srv.logs.String(), "upload.rejected"); !strings.Contains(l, "level=WARN") ||
+		!strings.Contains(l, "status=413") || !strings.Contains(l, "draft_id="+d.DraftID) {
+		t.Errorf("rejected line = %q", l)
+	}
 
 	uid, raw := ownDraftRaw(t, c, d.DraftID)
 	if uid != oldUID || !bytes.Equal(raw, oldRaw) {
@@ -227,7 +245,12 @@ func TestUpload_ForeignDraft403(t *testing.T) {
 	srv := startServer(t)
 	foreign := seedRaw(t, c, draftsFolder, []byte("From: me@example.com\nSubject: mine\n\nhand-written\n"))[0]
 
-	errorOf(t, srv.upload(t, c, ids.NewDraftID(), filePart("a.txt", "", "x")), 403, "not_editable")
+	id := ids.NewDraftID()
+	errorOf(t, srv.upload(t, c, id, filePart("a.txt", "", "x")), 403, "not_editable")
+	if l := logLine(srv.logs.String(), "upload.rejected"); !strings.Contains(l, "level=WARN") ||
+		!strings.Contains(l, "status=403") || !strings.Contains(l, "code=not_editable") || !strings.Contains(l, "draft_id="+id) {
+		t.Errorf("rejected line = %q", l)
+	}
 	if uids := rawUIDs(t, c, draftsFolder); !slices.Equal(uids, []uint32{foreign}) {
 		t.Errorf("Drafts UIDs = %v, want only the foreign draft %d", uids, foreign)
 	}

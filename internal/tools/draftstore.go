@@ -36,6 +36,8 @@ type AddedAttachments struct {
 	Attachments []DraftAttachment
 	// Size is the size of the new message.
 	Size int64
+	// OldUID and UID are the UIDs of the old and the new copy in Drafts.
+	OldUID, UID uint32
 	// Warning is set when the old copy could not be removed.
 	Warning string
 }
@@ -57,7 +59,7 @@ func AddAttachments(ctx context.Context, s *imapsafe.Session, draftID string, fi
 	if err != nil {
 		return AddedAttachments{}, err
 	}
-	return AddedAttachments{Attachments: attachmentsOut(rb.files), Size: rb.size, Warning: rb.warning}, nil
+	return AddedAttachments{Attachments: attachmentsOut(rb.files), Size: rb.size, OldUID: rb.oldUID, UID: rb.uid, Warning: rb.warning}, nil
 }
 
 // editFunc changes the new draft input, which starts as a copy of the old
@@ -68,6 +70,8 @@ type rebuilt struct {
 	input   drafts.Input
 	files   []spoolFile
 	size    int64
+	oldUID  uint32
+	uid     uint32
 	warning string
 }
 
@@ -109,11 +113,11 @@ func rebuildDraft(ctx context.Context, s *imapsafe.Session, draftID string, edit
 	}
 	sp.files = append(sp.files, extra...)
 
-	size, err := storeDraft(ctx, s, &input, &sp)
+	newUID, size, err := storeDraft(ctx, s, &input, &sp)
 	if err != nil {
 		return rebuilt{}, err
 	}
-	out := rebuilt{input: input, files: sp.files, size: size}
+	out := rebuilt{input: input, files: sp.files, size: size, oldUID: uid, uid: newUID}
 	if err := s.RemoveOwnDraft(ctx, draftID, uv, uid); err != nil {
 		logging.From(ctx).Error("draft.duplicate_left", "draft_id", draftID, "uid", uid, "error", err.Error())
 		out.warning = "old copy could not be removed"
@@ -144,14 +148,14 @@ func draftInput(old mailparse.Parsed, draftID string) drafts.Input {
 }
 
 // storeDraft sets a fresh Message-ID and Date, then builds the draft and
-// streams it into APPEND. It returns the message size.
-func storeDraft(ctx context.Context, s *imapsafe.Session, in *drafts.Input, sp *spool) (int64, error) {
+// streams it into APPEND. It returns the new UID and the message size.
+func storeDraft(ctx context.Context, s *imapsafe.Session, in *drafts.Input, sp *spool) (uint32, int64, error) {
 	in.MessageID = drafts.NewMessageID(in.From)
 	in.Date = time.Now()
 	parts := sp.parts()
 	size, err := drafts.Size(*in, parts)
 	if err != nil {
-		return 0, badArg("cannot build the draft: " + err.Error())
+		return 0, 0, badArg("cannot build the draft: " + err.Error())
 	}
 	pr, pw := io.Pipe()
 	done := make(chan struct{})
@@ -166,12 +170,12 @@ func storeDraft(ctx context.Context, s *imapsafe.Session, in *drafts.Input, sp *
 		}()
 		err = drafts.Build(pw, *in, parts)
 	}()
-	_, err = s.AppendDraft(ctx, size, pr)
+	uid, err := s.AppendDraft(ctx, size, pr)
 	// Unblock Build when APPEND stopped reading, and wait for it so the
 	// spool files are closed before they are removed.
 	pr.CloseWithError(errors.New("append finished"))
 	<-done
-	return size, err
+	return uid, size, err
 }
 
 // spool keeps attachment bytes in temp files while a draft is built. An
