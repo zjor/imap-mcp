@@ -203,13 +203,13 @@ func (s *Session) examine(ctx context.Context, folder string) (uint32, error) {
 	}
 	s.examined = ""
 	start := time.Now()
-	data, err := s.c.Select(folder, &imap.SelectOptions{ReadOnly: true}).Wait()
+	uv, err := s.w.selectFolder(folder, true)
 	logCmd(logging.From(ctx), "EXAMINE", folder, 0, start, err)
 	if err != nil {
 		return 0, fmt.Errorf("imap examine %q: %w", folder, err)
 	}
-	s.examined, s.uidValidity = folder, data.UIDValidity
-	return data.UIDValidity, nil
+	s.examined, s.uidValidity = folder, uv
+	return uv, nil
 }
 
 // Search runs UID SEARCH in folder. It returns UIDs newest first (highest
@@ -679,6 +679,9 @@ func (s *Session) ready(ctx context.Context) error {
 	}
 	if s.busy {
 		return errBusy
+	}
+	if s.broken {
+		return errBroken
 	}
 	return nil
 }

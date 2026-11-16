@@ -76,6 +76,7 @@ type Dialer struct {
 // Session is one logged-in IMAP connection. Close it when done.
 type Session struct {
 	c       *imapclient.Client
+	w       wire // command surface for EXAMINE and the draft operations
 	caps    Caps
 	folders SpecialFolders
 	stop    func() // stops the lifetime watchers
@@ -86,6 +87,7 @@ type Session struct {
 	examined    string // folder open with EXAMINE; "" when none
 	uidValidity uint32 // UIDVALIDITY of examined
 	busy        bool   // a FetchRaw/FetchPart reader is open
+	broken      bool   // the connection was closed after an aborted APPEND
 }
 
 // Caps returns the server capabilities read after login.
@@ -96,14 +98,15 @@ func (s *Session) Folders() SpecialFolders { return s.folders }
 
 // Close logs out, closes the connection and frees the limiter slot. When a
 // FetchRaw/FetchPart reader is still open, it skips LOGOUT and the reader
-// fails from then on.
+// fails from then on. After an aborted APPEND the connection is already
+// closed, so it skips LOGOUT too.
 func (s *Session) Close() error {
 	var err error
 	s.once.Do(func() {
 		s.stop()
 		// With an open reader the connection is mid-literal and LOGOUT
 		// would wait for it, so just close the connection.
-		if !s.busy {
+		if !s.busy && !s.broken {
 			start := time.Now()
 			lerr := s.c.Logout().Wait()
 			logCmd(s.log, "LOGOUT", "", 0, start, lerr)
@@ -216,6 +219,7 @@ func (d *Dialer) setup(ctx, setupCtx context.Context, log *slog.Logger, conn net
 
 	return &Session{
 		c:       cl,
+		w:       clientWire{cl},
 		caps:    toCaps(capSet),
 		folders: folders,
 		log:     log,

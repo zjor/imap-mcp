@@ -113,8 +113,10 @@ func fakeReadServer(t *testing.T, srv net.Conn, size int) func() []string {
 }
 
 func fakeSession(conn net.Conn) *Session {
+	c := imapclient.New(conn, nil)
 	return &Session{
-		c:       imapclient.New(conn, nil),
+		c:       c,
+		w:       clientWire{c},
 		stop:    func() {},
 		release: func() {},
 		log:     slog.New(slog.DiscardHandler),
