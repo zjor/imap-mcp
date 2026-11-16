@@ -28,7 +28,8 @@ func CredentialsFrom(ctx context.Context) (Credentials, bool) {
 // Middleware checks, in order: bearer token (401), IMAP username and
 // password (401), IMAP host (403). With one configured host the
 // X-IMAP-Host header is ignored. On success it stores Credentials in the
-// context and adds user, token_id and imap_host to the context logger.
+// context and adds user, token_id and imap_host to the context logger and
+// to the http.request access line.
 func Middleware(cfg config.Config) func(http.Handler) http.Handler {
 	hashes := make([][32]byte, len(cfg.AccessTokens))
 	for i, t := range cfg.AccessTokens {
@@ -64,6 +65,7 @@ func Middleware(cfg config.Config) func(http.Handler) http.Handler {
 			}
 			log = log.With("imap_host", host)
 
+			logging.SetAccessLogger(r.Context(), log)
 			ctx := context.WithValue(r.Context(), ctxKey{}, Credentials{Username: user, Password: pass, Host: host})
 			next.ServeHTTP(w, r.WithContext(logging.With(ctx, log)))
 		})

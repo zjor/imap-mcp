@@ -179,3 +179,35 @@ func TestCredentials_LogValueHasNoPassword(t *testing.T) {
 		}
 	}
 }
+
+func accessLine(t *testing.T, log string) string {
+	t.Helper()
+	for _, line := range strings.Split(log, "\n") {
+		if strings.Contains(line, "msg=http.request") {
+			return line
+		}
+	}
+	t.Fatalf("no http.request line in %s", log)
+	return ""
+}
+
+func TestMiddleware_AccessLineHasIdentity(t *testing.T) {
+	line := accessLine(t, run(t, oneHost(), request(nil)).log)
+	for _, s := range []string{"user=alice@example.com", "token_id=" + logging.TokenID(token), "imap_host=imap.example.com:993", "status=200"} {
+		if !strings.Contains(line, s) {
+			t.Errorf("access line %q misses %q", line, s)
+		}
+	}
+}
+
+func TestMiddleware_RejectedAccessLineHasNoIdentity(t *testing.T) {
+	line := accessLine(t, run(t, oneHost(), request(map[string]string{"X-IMAP-Password": ""})).log)
+	if !strings.Contains(line, "status=401") {
+		t.Errorf("access line %q misses status=401", line)
+	}
+	for _, s := range []string{"user=", "imap_host="} {
+		if strings.Contains(line, s) {
+			t.Errorf("access line %q has %q", line, s)
+		}
+	}
+}

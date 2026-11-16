@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"sync"
 	"time"
 )
 
@@ -18,6 +19,7 @@ type ctxKey int
 const (
 	loggerKey ctxKey = iota
 	requestIDKey
+	accessKey
 )
 
 var (
@@ -45,6 +47,30 @@ func From(ctx context.Context) *slog.Logger {
 		return l
 	}
 	return slog.Default()
+}
+
+// accessLogger holds the logger for the http.request line. Inner
+// middleware (auth) replaces it so the line carries user, token_id and
+// imap_host too.
+type accessLogger struct {
+	mu sync.Mutex
+	l  *slog.Logger
+}
+
+// SetAccessLogger replaces the logger RequestMiddleware uses for the
+// http.request line of this request. No-op outside RequestMiddleware.
+func SetAccessLogger(ctx context.Context, l *slog.Logger) {
+	if a, ok := ctx.Value(accessKey).(*accessLogger); ok {
+		a.mu.Lock()
+		a.l = l
+		a.mu.Unlock()
+	}
+}
+
+func (a *accessLogger) get() *slog.Logger {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.l
 }
 
 // RequestID returns the request id in ctx, or "" when there is none.
@@ -126,7 +152,9 @@ func RequestMiddleware(base *slog.Logger) func(http.Handler) http.Handler {
 			}
 			w.Header().Set("X-Request-Id", id)
 
+			access := &accessLogger{l: l}
 			ctx := context.WithValue(With(r.Context(), l), requestIDKey, id)
+			ctx = context.WithValue(ctx, accessKey, access)
 			body := &countingBody{ReadCloser: r.Body}
 			r = r.WithContext(ctx)
 			r.Body = body
@@ -151,7 +179,7 @@ func RequestMiddleware(base *slog.Logger) func(http.Handler) http.Handler {
 				if rec != nil {
 					attrs = append(attrs, "aborted", true)
 				}
-				l.Info("http.request", attrs...)
+				access.get().Info("http.request", attrs...)
 				if rec != nil {
 					panic(rec)
 				}
