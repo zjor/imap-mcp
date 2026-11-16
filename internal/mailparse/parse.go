@@ -51,24 +51,30 @@ type Parsed struct {
 	Truncated bool
 }
 
-// Parse reads a message. It fails only when the top-level header cannot be
-// read. Broken MIME below that degrades to best-effort output.
+// ErrUnparseable means the message cannot be parsed. Its text is fixed and
+// never holds message content, so it is safe to log.
+var ErrUnparseable = errors.New("mailparse: message cannot be parsed")
+
+// errInternal is returned after a recovered panic. It wraps ErrUnparseable.
+var errInternal = fmt.Errorf("%w: internal error", ErrUnparseable)
+
+// Parse reads a message. It fails with ErrUnparseable only when the
+// top-level header cannot be read. Broken MIME below that degrades to
+// best-effort output.
 //
 // A panic inside a third-party parser is recovered: Parse then returns what
-// was parsed so far together with a non-nil error.
+// was parsed so far together with an error that wraps ErrUnparseable.
 func Parse(r io.Reader) (res Parsed, err error) {
 	var p Parsed
 	defer func() {
 		if rec := recover(); rec != nil {
-			res, err = p, fmt.Errorf("mailparse: internal error: %v", rec)
+			res, err = p, errInternal
 		}
 	}()
 	e, err := message.Read(r)
 	if e == nil || (err != nil && !message.IsUnknownCharset(err) && !message.IsUnknownEncoding(err)) {
-		if err == nil {
-			err = errors.New("mailparse: cannot read message")
-		}
-		return Parsed{}, err
+		// The parser's error text can quote header lines; drop it.
+		return Parsed{}, ErrUnparseable
 	}
 	p.Headers = readHeaders(e.Header)
 	var text, html string

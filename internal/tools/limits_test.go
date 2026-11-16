@@ -214,3 +214,31 @@ func TestGetThread_CapsMessagesAndBodies(t *testing.T) {
 		t.Errorf("uncapped: %v, truncated=%v, %d messages", err, out.Truncated, len(out.Messages))
 	}
 }
+
+func TestGetThread_SkipsUnparseableMember(t *testing.T) {
+	inbox := folderOf(3, nil)
+	inbox[2] = fakeMsg{date: day0.AddDate(0, 0, 2), raw: "Subject: Secret quarterly\r\nnumbers inside\r\n\r\nbody\r\n"}
+	mb := &fakeMailbox{folders: map[string]map[uint32]fakeMsg{"INBOX": inbox}}
+	out, err := getThread(context.Background(), mb, Deps{}, ids.MessageID{Folder: "INBOX", UIDValidity: 7, UID: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []uint32
+	for _, m := range out.Messages {
+		id, _ := ids.DecodeMessage(m.ID)
+		got = append(got, id.UID)
+	}
+	if !slices.Equal(got, []uint32{1, 3}) {
+		t.Errorf("uids = %v, want [1 3]", got)
+	}
+}
+
+func TestReadEmail_UnparseableError(t *testing.T) {
+	inbox := map[uint32]fakeMsg{1: {date: day0, raw: "Subject: Secret quarterly\r\nnumbers inside\r\n\r\nbody\r\n"}}
+	mb := &fakeMailbox{folders: map[string]map[uint32]fakeMsg{"INBOX": inbox}}
+	_, _, err := readMessage(context.Background(), mb, Deps{}, ids.MessageID{Folder: "INBOX", UIDValidity: 7, UID: 1}, "")
+	code, msg := classify(err)
+	if code != codeUnparseable || strings.Contains(msg, "numbers inside") {
+		t.Errorf("classify(%v) = %q, %q", err, code, msg)
+	}
+}

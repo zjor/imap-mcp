@@ -94,8 +94,12 @@ func addSessionTool[In any](srv *mcp.Server, deps Deps, tool *mcp.Tool, safeArgs
 			code, msg := classify(err)
 			outcome = code
 			res = errorResult(ctx, code, msg)
+			// Only IMAP errors log their text. Other errors log the code
+			// only, because their text may quote message content (spec 7.8).
 			if code == codeIMAPError {
-				log.Error("tool.error", "tool", name, "error", err.Error())
+				log.Error("tool.error", "tool", name, "code", code, "error", err.Error())
+			} else if code == codeUnparseable {
+				log.Warn("tool.error", "tool", name, "code", code)
 			}
 		}
 		attrs = append(attrs, "count", count, "duration_ms", time.Since(start).Milliseconds(), "outcome", outcome)

@@ -13,6 +13,7 @@ import (
 
 	"github.com/zjor/imap-mcp/internal/ids"
 	"github.com/zjor/imap-mcp/internal/imapsafe"
+	"github.com/zjor/imap-mcp/internal/mailparse"
 )
 
 // maxThreadRefs caps the Message-IDs searched in Sent (and in the source
@@ -138,8 +139,8 @@ func getThread(ctx context.Context, s mailbox, deps Deps, start ids.MessageID) (
 		e := first
 		if c.id != start {
 			e, _, err = readMessage(ctx, s, deps, c.id, "text")
-			if errors.Is(err, imapsafe.ErrNotFound) {
-				continue // removed meanwhile
+			if errors.Is(err, imapsafe.ErrNotFound) || errors.Is(err, mailparse.ErrUnparseable) {
+				continue // removed meanwhile, or broken: keep the others
 			}
 			if err != nil {
 				return threadOut{}, err

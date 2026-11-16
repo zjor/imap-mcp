@@ -2,6 +2,7 @@ package mailparse
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -250,6 +251,9 @@ func FuzzParse(f *testing.F) {
 		if err != nil && strings.Contains(err.Error(), "internal error") {
 			t.Fatalf("panic recovered: %v (%+v)", err, p)
 		}
+		if err != nil && !errors.Is(err, ErrUnparseable) {
+			t.Fatalf("err = %v, want ErrUnparseable", err)
+		}
 	})
 }
 
@@ -261,5 +265,19 @@ func TestParse_Bcc(t *testing.T) {
 	want := []Address{{"Eva", "eva@example.com"}, {"", "x@example.com"}}
 	if !reflect.DeepEqual(p.Headers.Bcc, want) {
 		t.Errorf("bcc = %+v", p.Headers.Bcc)
+	}
+}
+
+func TestParse_MalformedHeaderIsUnparseable(t *testing.T) {
+	raw := "From: a@example.com\r\nSubject: Secret quarterly\r\nnumbers inside\r\n\r\nbody\r\n"
+	p, err := Parse(strings.NewReader(raw))
+	if !errors.Is(err, ErrUnparseable) {
+		t.Fatalf("err = %v, want ErrUnparseable", err)
+	}
+	if strings.Contains(err.Error(), "numbers inside") || strings.Contains(err.Error(), "Secret") {
+		t.Errorf("error text holds input: %q", err)
+	}
+	if !reflect.DeepEqual(p, Parsed{}) {
+		t.Errorf("parsed = %+v, want empty", p)
 	}
 }

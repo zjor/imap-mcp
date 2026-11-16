@@ -11,6 +11,7 @@ import (
 	"github.com/zjor/imap-mcp/internal/ids"
 	"github.com/zjor/imap-mcp/internal/imapsafe"
 	"github.com/zjor/imap-mcp/internal/logging"
+	"github.com/zjor/imap-mcp/internal/mailparse"
 )
 
 // Tool error codes (the "code" field of the error shape).
@@ -24,6 +25,7 @@ const (
 	codeBadArgument = "bad_argument"
 	codeNotEditable = "not_editable"
 	codeTooLarge    = "too_large"
+	codeUnparseable = "unparseable"
 )
 
 // argError is a caller mistake in the arguments. Its text goes to the
@@ -58,6 +60,8 @@ func classify(err error) (code, message string) {
 		return codeNotFound, "folder not found"
 	case errors.Is(err, imapsafe.ErrUnsupported):
 		return codeUnsupported, "not supported on this server"
+	case errors.Is(err, mailparse.ErrUnparseable):
+		return codeUnparseable, "message cannot be parsed"
 	}
 	return codeIMAPError, "IMAP server error"
 }

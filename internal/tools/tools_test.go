@@ -13,6 +13,7 @@ import (
 
 	"github.com/zjor/imap-mcp/internal/ids"
 	"github.com/zjor/imap-mcp/internal/imapsafe"
+	"github.com/zjor/imap-mcp/internal/mailparse"
 )
 
 func TestFolderOut_UnknownCountsAreNull(t *testing.T) {
@@ -109,6 +110,7 @@ func TestClassify_NeverLeaksServerText(t *testing.T) {
 		{fmt.Errorf("imap fetch: %w", &imap.Error{Type: imap.StatusResponseTypeNo, Text: serverText}), codeIMAPError},
 		{errors.New(serverText), codeIMAPError},
 		{badArg("limit is bad"), codeBadArgument},
+		{fmt.Errorf("x: %w", mailparse.ErrUnparseable), codeUnparseable},
 	}
 	for _, tc := range cases {
 		code, msg := classify(tc.err)

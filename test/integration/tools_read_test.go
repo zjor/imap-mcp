@@ -448,6 +448,53 @@ func TestReadEmail_StaleIDError(t *testing.T) {
 	}
 }
 
+// A header line without a colon makes the message unparseable. read_email
+// answers "unparseable", the log never quotes the line, and get_thread
+// still returns the other members.
+func TestReadEmail_MalformedHeaderUnparseable(t *testing.T) {
+	c := freshUser(t)
+	seed(t, c, "INBOX", "search-1.eml")
+	bad := "From: Bob <bob@example.com>\nSubject: Weekly secret quarterly\nnumbers inside\n" +
+		"Message-ID: <bad-1@example.com>\nIn-Reply-To: <search-1@example.com>\n" +
+		"References: <search-1@example.com>\nDate: Tue, 17 Nov 2026 09:00:00 +0000\n\nbody\n"
+	badUID := seedRaw(t, c, "INBOX", []byte(bad))[0]
+	srv := startServer(t)
+	cs := srv.connect(t, c)
+
+	var s searchOut
+	mustCall(t, cs, "search_emails", nil, &s)
+	var badID, goodID string
+	for _, m := range s.Messages {
+		if uidOf(t, m.ID) == badUID {
+			badID = m.ID
+		} else {
+			goodID = m.ID
+		}
+	}
+	if badID == "" || goodID == "" {
+		t.Fatalf("search = %+v", s)
+	}
+
+	te := call(t, cs, "read_email", map[string]any{"id": badID}, nil)
+	if te == nil || te.Error.Code != "unparseable" || strings.Contains(te.Error.Message, "numbers inside") {
+		t.Fatalf("error = %+v, want code unparseable", te)
+	}
+	var out struct {
+		Messages []emailOut `json:"messages"`
+	}
+	mustCall(t, cs, "get_thread", map[string]any{"id": goodID}, &out)
+	if len(out.Messages) != 1 || out.Messages[0].Headers.MessageID != "search-1@example.com" {
+		t.Errorf("thread = %+v, want only the good message", out.Messages)
+	}
+	logs := srv.logs.String()
+	if strings.Contains(logs, "numbers inside") {
+		t.Errorf("log quotes the malformed header line:\n%s", logs)
+	}
+	if !strings.Contains(logs, "code=unparseable") {
+		t.Errorf("log misses code=unparseable:\n%s", logs)
+	}
+}
+
 func TestGetThread_IncludesSent(t *testing.T) {
 	c := freshUser(t)
 	inUID := seed(t, c, "INBOX", "search-1.eml")[0]
