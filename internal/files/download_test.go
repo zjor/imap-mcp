@@ -5,9 +5,9 @@ import "testing"
 func TestContentDisposition(t *testing.T) {
 	tests := []struct{ name, want string }{
 		{"Faktura č.pdf", "attachment; filename*=UTF-8''Faktura%20%C4%8D.pdf"},
-		{"a‮gpj.exe", "attachment; filename*=UTF-8''agpj.exe"},
+		{"a\u202egpj.exe", "attachment; filename*=UTF-8''agpj.exe"},
 		{"../x';y\".txt", "attachment; filename*=UTF-8''x%27%3By.txt"},
-		{"​", "attachment; filename*=UTF-8''attachment"},
+		{"\u200b", "attachment; filename*=UTF-8''attachment"},
 	}
 	for _, tt := range tests {
 		if got := contentDisposition(tt.name); got != tt.want {
