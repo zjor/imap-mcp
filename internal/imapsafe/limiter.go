@@ -2,6 +2,7 @@ package imapsafe
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 )
@@ -27,10 +28,12 @@ func NewLimiter(perUser int) *Limiter {
 	return &Limiter{perUser: perUser, users: make(map[string]*userSlots)}
 }
 
-// Acquire waits for a free slot for user. It returns a release func (safe to
-// call more than once) and how long the caller waited. When ctx ends first,
-// it returns ctx.Err().
+// Acquire waits for a free slot for user. Usernames are compared without
+// case, so "Alice" and "alice" share slots. It returns a release func (safe
+// to call more than once) and how long the caller waited. When ctx ends
+// first, it returns ctx.Err().
 func (l *Limiter) Acquire(ctx context.Context, user string) (release func(), waited time.Duration, err error) {
+	user = strings.ToLower(user)
 	l.mu.Lock()
 	u := l.users[user]
 	if u == nil {

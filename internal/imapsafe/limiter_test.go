@@ -114,3 +114,20 @@ func TestSessionLimiter_ReportsWait(t *testing.T) {
 		t.Errorf("waited = %v", waited)
 	}
 }
+
+func TestSessionLimiter_UsernameCaseShareSlot(t *testing.T) {
+	l := NewLimiter(1)
+	rel, _, err := l.Acquire(context.Background(), "Alice@Example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, _, err := l.Acquire(ctx, "alice@example.com"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("case variant got its own slot: err = %v", err)
+	}
+	rel()
+	if len(l.users) != 0 {
+		t.Errorf("users left: %v", l.users)
+	}
+}
