@@ -1,0 +1,16 @@
+From: a@example.com
+Subject: img
+Content-Type: multipart/related; boundary="B"
+
+--B
+Content-Type: text/html
+
+<p>hi <img src="cid:x"></p>
+--B
+Content-Type: image/png
+Content-Disposition: inline
+Content-ID: <x>
+Content-Transfer-Encoding: base64
+
+iVBORw0KGgo=
+--B--

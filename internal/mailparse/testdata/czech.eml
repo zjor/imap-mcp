@@ -1,0 +1,23 @@
+From: =?UTF-8?B?SmnFmcOtIE5vdsOhaw==?= <jiri@example.cz>
+To: Anna <anna@example.cz>, bob@example.cz
+Cc: =?UTF-8?Q?Ev=C4=9Bna?= <evena@example.cz>
+Subject: =?UTF-8?B?RmFrdHVyYSDEjS4gMTIg4oCTIMWZw61qZW4=?=
+Date: Mon, 02 Nov 2026 10:00:00 +0100
+Message-ID: <abc@example.cz>
+In-Reply-To: <prev@example.cz>
+References: <r1@example.cz> <r2@example.cz>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="B"
+
+--B
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+Dobrý den, posílám fakturu.
+--B
+Content-Type: application/pdf
+Content-Disposition: attachment; filename*=UTF-8''faktura-%C5%99%C3%ADjen.pdf
+Content-Transfer-Encoding: base64
+
+JVBERi0xLjQK
+--B--

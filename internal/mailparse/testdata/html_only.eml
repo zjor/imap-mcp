@@ -1,0 +1,5 @@
+From: a@example.com
+Subject: html
+Content-Type: text/html; charset=utf-8
+
+<html><body><p>Hello <b>world</b></p><script>alert(1)</script></body></html>
