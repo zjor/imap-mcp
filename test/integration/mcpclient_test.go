@@ -57,13 +57,19 @@ func startServer(t *testing.T, imapHosts ...string) *mcpServer {
 	if len(imapHosts) == 0 {
 		imapHosts = []string{imapHost()}
 	}
-	cfg := config.Config{
+	return startServerCfg(t, config.Config{
 		Listen:             "127.0.0.1:0",
 		IMAPHosts:          imapHosts,
 		AccessTokens:       []string{testToken},
 		PublicURL:          testPublicURL,
 		MaxSessionsPerUser: 4,
-	}
+		MaxUpload:          25 << 20,
+	})
+}
+
+// startServerCfg runs the real handler with cfg against Dovecot.
+func startServerCfg(t *testing.T, cfg config.Config) *mcpServer {
+	t.Helper()
 	logs := &syncBuffer{}
 	logger := logging.New(logs, slog.LevelDebug, "text")
 	ts := httptest.NewServer(server.NewWithDialer(cfg, logger, testDialer(t)))

@@ -42,6 +42,7 @@ func NewWithDialer(cfg config.Config, logger *slog.Logger, d *imapsafe.Dialer) h
 		tools.Register(s, tools.Deps{Dialer: d, PublicURL: cfg.PublicURL})
 	}, func(mux *http.ServeMux) {
 		mux.Handle("/attachments/{id}", files.DownloadHandler(d))
+		mux.Handle("/drafts/{draft_id}/attachments", files.UploadHandler(d, cfg.MaxUpload))
 	})
 }
 

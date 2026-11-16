@@ -3,10 +3,7 @@ package tools
 import (
 	"context"
 	"errors"
-	"fmt"
-	"io"
 	"net/mail"
-	"os"
 	"slices"
 	"time"
 
@@ -66,18 +63,12 @@ type draftHeadersOut struct {
 	Subject string   `json:"subject"`
 }
 
-type draftAttachmentOut struct {
-	Filename    string `json:"filename"`
-	ContentType string `json:"content_type"`
-	Size        int64  `json:"size"`
-}
-
 type draftOut struct {
-	DraftID     string               `json:"draft_id"`
-	Headers     draftHeadersOut      `json:"headers"`
-	Attachments []draftAttachmentOut `json:"attachments"`
-	UploadURL   string               `json:"upload_url"`
-	Warning     string               `json:"warning,omitempty"`
+	DraftID     string            `json:"draft_id"`
+	Headers     draftHeadersOut   `json:"headers"`
+	Attachments []DraftAttachment `json:"attachments"`
+	UploadURL   string            `json:"upload_url"`
+	Warning     string            `json:"warning,omitempty"`
 }
 
 type draftItemOut struct {
@@ -208,82 +199,35 @@ func createDraft(ctx context.Context, s *imapsafe.Session, deps Deps, in createD
 	if err != nil {
 		return nil, 0, err
 	}
-	audit(ctx, "draft.created", input, &sp, size)
-	return toDraftOut(deps, input, &sp), 1, nil
+	audit(ctx, "draft.created", input, len(sp.files), size)
+	return toDraftOut(deps, input, sp.files), 1, nil
 }
 
 func updateDraft(ctx context.Context, s *imapsafe.Session, deps Deps, in updateDraftIn) (any, int, error) {
-	// Check first, so nothing is appended when the old copy cannot go.
-	if !s.Caps().UIDPlus {
-		return nil, 0, imapsafe.ErrUnsupported
-	}
-	if err := ids.CheckDraftID(in.DraftID); err != nil {
-		return nil, 0, err
-	}
-	uid, uv, err := s.FindDraft(ctx, in.DraftID)
+	rb, err := rebuildDraft(ctx, s, in.DraftID, func(old mailparse.Parsed, input *drafts.Input) (func(mailparse.Attachment) bool, error) {
+		if old.Truncated && (in.BodyText == nil || (old.HTML != "" && in.BodyHTML == nil)) {
+			return nil, badArg("the draft body is too large to keep; pass body_text and body_html")
+		}
+		setIf(&input.From, in.From)
+		setIf(&input.To, in.To)
+		setIf(&input.Cc, in.Cc)
+		setIf(&input.Bcc, in.Bcc)
+		setIf(&input.Subject, in.Subject)
+		setIf(&input.BodyText, in.BodyText)
+		setIf(&input.BodyHTML, in.BodyHTML)
+		for _, name := range in.RemoveAttachments {
+			if !slices.ContainsFunc(old.Attachments, func(a mailparse.Attachment) bool { return a.Filename == name }) {
+				return nil, badArg("the draft has no attachment named " + name)
+			}
+		}
+		return keepAllBut(in.RemoveAttachments), nil
+	}, nil)
 	if err != nil {
 		return nil, 0, err
 	}
-	mid := ids.MessageID{Folder: s.Folders().Drafts, UIDValidity: uv, UID: uid}
-	_, old, err := readMessage(ctx, s, deps, mid, "")
-	if err != nil {
-		return nil, 0, err
-	}
-
-	h := old.Headers
-	input := drafts.Input{
-		Mode: "new", To: addrStrings(h.To), Cc: addrStrings(h.Cc), Bcc: addrStrings(h.Bcc),
-		Subject: h.Subject, BodyText: old.Text, BodyHTML: old.HTML, DraftID: in.DraftID,
-	}
-	if len(h.From) > 0 {
-		input.From = addrStrings(h.From[:1])[0]
-	}
-	if h.InReplyTo != "" {
-		// Build sets References to Original.References + Original.MessageID.
-		refs := h.References
-		if n := len(refs); n > 0 && refs[n-1] == h.InReplyTo {
-			refs = refs[:n-1]
-		}
-		input.Mode = "reply"
-		input.Original = &mailparse.Parsed{Headers: mailparse.Headers{MessageID: h.InReplyTo, References: refs}}
-	}
-	if old.Truncated && (in.BodyText == nil || (old.HTML != "" && in.BodyHTML == nil)) {
-		return nil, 0, badArg("the draft body is too large to keep; pass body_text and body_html")
-	}
-	setIf(&input.From, in.From)
-	setIf(&input.To, in.To)
-	setIf(&input.Cc, in.Cc)
-	setIf(&input.Bcc, in.Bcc)
-	setIf(&input.Subject, in.Subject)
-	setIf(&input.BodyText, in.BodyText)
-	setIf(&input.BodyHTML, in.BodyHTML)
-
-	for _, name := range in.RemoveAttachments {
-		if !slices.ContainsFunc(old.Attachments, func(a mailparse.Attachment) bool { return a.Filename == name }) {
-			return nil, 0, badArg("the draft has no attachment named " + name)
-		}
-	}
-	var sp spool
-	defer sp.remove(ctx)
-	for _, a := range old.Attachments {
-		if slices.Contains(in.RemoveAttachments, a.Filename) {
-			continue
-		}
-		if err := sp.add(ctx, s, ids.AttachmentID{MessageID: mid, Part: a.Part}, a.Filename, a.ContentType); err != nil {
-			return nil, 0, err
-		}
-	}
-
-	size, err := storeDraft(ctx, s, &input, &sp)
-	if err != nil {
-		return nil, 0, err
-	}
-	out := toDraftOut(deps, input, &sp)
-	if err := s.RemoveOwnDraft(ctx, in.DraftID, uv, uid); err != nil {
-		logging.From(ctx).Error("draft.duplicate_left", "draft_id", in.DraftID, "uid", uid, "error", err.Error())
-		out.Warning = "old copy could not be removed"
-	}
-	audit(ctx, "draft.updated", input, &sp, size)
+	out := toDraftOut(deps, rb.input, rb.files)
+	out.Warning = rb.warning
+	audit(ctx, "draft.updated", rb.input, len(rb.files), rb.size)
 	return out, 1, nil
 }
 
@@ -379,112 +323,21 @@ func forwardSelection(mid ids.MessageID, all []mailparse.Attachment, sel []strin
 	return out, nil
 }
 
-// storeDraft sets a fresh Message-ID and Date, then builds the draft and
-// streams it into APPEND. It returns the message size.
-func storeDraft(ctx context.Context, s *imapsafe.Session, in *drafts.Input, sp *spool) (int64, error) {
-	in.MessageID = drafts.NewMessageID(in.From)
-	in.Date = time.Now()
-	parts := sp.parts()
-	size, err := drafts.Size(*in, parts)
-	if err != nil {
-		return 0, badArg("cannot build the draft: " + err.Error())
-	}
-	pr, pw := io.Pipe()
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		var err error
-		defer func() {
-			if r := recover(); r != nil {
-				err = fmt.Errorf("draft build panic: %v", r)
-			}
-			pw.CloseWithError(err)
-		}()
-		err = drafts.Build(pw, *in, parts)
-	}()
-	_, err = s.AppendDraft(ctx, size, pr)
-	// Unblock Build when APPEND stopped reading, and wait for it so the
-	// spool files are closed before they are removed.
-	pr.CloseWithError(errors.New("append finished"))
-	<-done
-	return size, err
-}
-
-// spool keeps attachment bytes in temp files while a draft is built. An
-// IMAP session cannot FETCH while an APPEND literal streams, and Size and
-// Build each read every part.
-type spool struct{ files []spoolFile }
-
-type spoolFile struct {
-	name, contentType, path string
-	size                    int64
-}
-
-// add copies one MIME part into a new temp file. The FETCH stream is
-// closed before add returns.
-func (sp *spool) add(ctx context.Context, s *imapsafe.Session, id ids.AttachmentID, name, contentType string) error {
-	f, err := os.CreateTemp("", "imap-mcp-draft-*")
-	if err != nil {
-		return err
-	}
-	if name == "" {
-		name = "attachment"
-	}
-	sp.files = append(sp.files, spoolFile{name: name, contentType: contentType, path: f.Name()})
-	r, _, err := s.FetchPart(ctx, id)
-	if err != nil {
-		f.Close()
-		return err
-	}
-	n, cerr := io.Copy(f, r)
-	if err := errors.Join(cerr, r.Close(), f.Close()); err != nil {
-		return err
-	}
-	sp.files[len(sp.files)-1].size = n
-	return nil
-}
-
-func (sp *spool) parts() []drafts.Part {
-	out := make([]drafts.Part, 0, len(sp.files))
-	for _, f := range sp.files {
-		out = append(out, drafts.Part{
-			Filename:    f.name,
-			ContentType: f.contentType,
-			Open:        func() (io.ReadCloser, error) { return os.Open(f.path) },
-		})
-	}
-	return out
-}
-
-// remove deletes the temp files. It runs deferred, so also on error and
-// panic.
-func (sp *spool) remove(ctx context.Context) {
-	for _, f := range sp.files {
-		if err := os.Remove(f.path); err != nil && !errors.Is(err, os.ErrNotExist) {
-			logging.From(ctx).Error("draft.tempfile_cleanup", "error", err.Error())
-		}
-	}
-}
-
-func toDraftOut(deps Deps, in drafts.Input, sp *spool) draftOut {
-	out := draftOut{
+func toDraftOut(deps Deps, in drafts.Input, files []spoolFile) draftOut {
+	return draftOut{
 		DraftID: in.DraftID,
 		Headers: draftHeadersOut{
 			From: in.From, To: orEmpty(in.To), Cc: orEmpty(in.Cc), Bcc: orEmpty(in.Bcc), Subject: in.Subject,
 		},
-		Attachments: make([]draftAttachmentOut, 0, len(sp.files)),
+		Attachments: attachmentsOut(files),
 		UploadURL:   deps.PublicURL + "/drafts/" + in.DraftID + "/attachments",
 	}
-	for _, f := range sp.files {
-		out.Attachments = append(out.Attachments, draftAttachmentOut{Filename: f.name, ContentType: f.contentType, Size: f.size})
-	}
-	return out
 }
 
 // audit logs one write: no addresses and no subject (spec 7.8).
-func audit(ctx context.Context, event string, in drafts.Input, sp *spool, size int64) {
+func audit(ctx context.Context, event string, in drafts.Input, attachments int, size int64) {
 	logging.From(ctx).Info(event, "draft_id", in.DraftID,
-		"recipients", len(in.To)+len(in.Cc)+len(in.Bcc), "attachments", len(sp.files), "size", size)
+		"recipients", len(in.To)+len(in.Cc)+len(in.Bcc), "attachments", attachments, "size", size)
 }
 
 // defaultFrom is the login name when it is an email address, else empty

@@ -41,7 +41,7 @@ func download(d *imapsafe.Dialer, w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := ids.DecodeAttachment(r.PathValue("id"))
 	if err != nil {
-		fail(ctx, w, err)
+		fail(ctx, w, "attachment.failed", err)
 		return
 	}
 	creds, ok := auth.CredentialsFrom(ctx)
@@ -53,14 +53,14 @@ func download(d *imapsafe.Dialer, w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	s, err := d.Open(ctx, creds)
 	if err != nil {
-		fail(ctx, w, err)
+		fail(ctx, w, "attachment.failed", err)
 		return
 	}
 	defer s.Close()
 
 	name, mediaType, err := s.PartInfo(ctx, id)
 	if err != nil {
-		fail(ctx, w, err)
+		fail(ctx, w, "attachment.failed", err)
 		return
 	}
 
@@ -69,7 +69,7 @@ func download(d *imapsafe.Dialer, w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		body, size, err = s.FetchPart(ctx, id)
 		if err != nil {
-			fail(ctx, w, err)
+			fail(ctx, w, "attachment.failed", err)
 			return
 		}
 		// Runs before s.Close: the session is busy until the stream closes.
@@ -126,12 +126,13 @@ func partPath(part []int) string {
 	return strings.Join(s, ".")
 }
 
-// fail answers with the tool error shape and the matching HTTP status.
-func fail(ctx context.Context, w http.ResponseWriter, err error) {
+// fail answers with the tool error shape and the matching HTTP status. It
+// logs unexpected errors as event.
+func fail(ctx context.Context, w http.ResponseWriter, event string, err error) {
 	if ctx.Err() != nil {
 		return // client is gone
 	}
-	code, msg := tools.Classify(err)
+	code, msg := classify(err)
 	status := http.StatusBadGateway
 	switch code {
 	case "bad_id", "bad_argument":
@@ -142,9 +143,13 @@ func fail(ctx context.Context, w http.ResponseWriter, err error) {
 		status = http.StatusNotFound
 	case "auth_failed":
 		status = http.StatusUnauthorized
+	case "not_editable":
+		status = http.StatusForbidden
+	case "too_large":
+		status = http.StatusRequestEntityTooLarge
 	}
 	if status == http.StatusBadGateway && !errors.Is(err, imapsafe.ErrUnsupported) {
-		logging.From(ctx).Error("attachment.failed", "error", err.Error())
+		logging.From(ctx).Error(event, "error", err.Error())
 	}
 	writeError(ctx, w, status, code, msg)
 }
