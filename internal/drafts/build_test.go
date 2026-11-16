@@ -14,7 +14,7 @@ var fixedDate = time.Date(2026, 11, 16, 10, 0, 0, 0, time.UTC)
 
 func build(t *testing.T, in Input, atts []Part) string {
 	t.Helper()
-	in.Date = fixedDate
+	in.Date, in.MessageID = fixedDate, "m1@example.com"
 	var b bytes.Buffer
 	if err := Build(&b, in, atts); err != nil {
 		t.Fatal(err)
@@ -157,7 +157,7 @@ func TestBuild_ReplySetsThreading(t *testing.T) {
 func TestSize_MatchesBuild(t *testing.T) {
 	in := base()
 	in.BodyHTML = "<p>x</p>"
-	in.Date = fixedDate
+	in.Date, in.MessageID = fixedDate, "m1@example.com"
 	atts := []Part{att("a.bin", bytes.Repeat([]byte("abc"), 10000)), att("příloha.txt", []byte("hi"))}
 	var b bytes.Buffer
 	if err := Build(&b, in, atts); err != nil {
@@ -169,5 +169,54 @@ func TestSize_MatchesBuild(t *testing.T) {
 	}
 	if n != int64(b.Len()) {
 		t.Errorf("Size=%d len=%d", n, b.Len())
+	}
+}
+
+func TestBuild_RequiredFields(t *testing.T) {
+	in := base()
+	in.MessageID = "m@x"
+	if err := Build(io.Discard, in, nil); err == nil {
+		t.Error("zero Date: want error")
+	}
+	if _, err := Size(in, nil); err == nil {
+		t.Error("Size zero Date: want error")
+	}
+	in.Date = fixedDate
+	for _, id := range []string{"", "<m@x>", "m @x", "m@x\r\nBcc: a@b.c"} {
+		in.MessageID = id
+		if err := Build(io.Discard, in, nil); err == nil {
+			t.Errorf("message id %q: want error", id)
+		}
+	}
+}
+
+func TestBuild_AttachmentRejects(t *testing.T) {
+	in := base()
+	in.Date, in.MessageID = fixedDate, "m@x"
+	for name, p := range map[string]Part{
+		"badtype":   {Filename: "a", ContentType: "foo"},
+		"spacetype": {Filename: "a", ContentType: "text/pl ain"},
+		"crlftype":  {Filename: "a", ContentType: "text/plain\r\nBcc: a@b.c"},
+		"crlfname":  {Filename: "a\r\nBcc: a@b.c", ContentType: "text/plain"},
+	} {
+		p.Open = func() (io.ReadCloser, error) { return io.NopCloser(strings.NewReader("x")), nil }
+		if err := Build(io.Discard, in, []Part{p}); err == nil {
+			t.Errorf("%s: want error", name)
+		}
+	}
+	p := Part{Filename: "a.txt", ContentType: "text/plain; charset=utf-8",
+		Open: func() (io.ReadCloser, error) { return io.NopCloser(strings.NewReader("x")), nil }}
+	if err := Build(io.Discard, in, []Part{p}); err != nil {
+		t.Errorf("params should be allowed: %v", err)
+	}
+}
+
+func TestNewMessageID(t *testing.T) {
+	a, b := NewMessageID("Me <me@example.com>"), NewMessageID("me@example.com")
+	if !strings.HasSuffix(a, "@example.com") || a == b {
+		t.Errorf("%q %q", a, b)
+	}
+	if got := NewMessageID(""); !strings.HasSuffix(got, "@localhost") {
+		t.Errorf("fallback: %q", got)
 	}
 }

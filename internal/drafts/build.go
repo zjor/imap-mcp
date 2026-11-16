@@ -3,6 +3,7 @@
 package drafts
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -25,9 +26,8 @@ const MarkerHeader = "X-IMAP-MCP-Draft-Id"
 // Input describes one draft.
 //
 // Build is deterministic so that Size equals the real build:
-//   - Date is used as given. When zero, time.Now() is used, so set it if the
-//     Size call and the Build call must match exactly.
-//   - Message-ID is "<DraftID@imap-mcp.invalid>". The draft id is unique.
+//   - Date and MessageID are required inputs. The caller sets one fresh value
+//     per build and uses the same Input for Size and Build.
 //   - MIME boundaries are derived from a hash of DraftID.
 type Input struct {
 	// Mode is "new", "reply", "reply_all" or "forward". Reply modes set
@@ -43,6 +43,8 @@ type Input struct {
 	BodyHTML string
 	DraftID  string
 	Date     time.Time
+	// MessageID is bare (no angle brackets), e.g. from NewMessageID.
+	MessageID string
 }
 
 // Part is one attachment. Open is called once per build; the body is
@@ -169,8 +171,19 @@ func writeAttachment(mw *message.Writer, a Part) error {
 	if ct == "" {
 		ct = "application/octet-stream"
 	}
+	mt, params, err := mime.ParseMediaType(ct)
+	if err != nil {
+		return fmt.Errorf("attachment %q: bad content type: %w", a.Filename, err)
+	}
+	if i := strings.IndexByte(mt, '/'); i <= 0 || i == len(mt)-1 {
+		return fmt.Errorf("attachment %q: content type needs type/subtype", a.Filename)
+	}
+	formatted := mime.FormatMediaType(mt, params)
+	if formatted == "" || hasCRLF(formatted) {
+		return fmt.Errorf("attachment %q: bad content type", a.Filename)
+	}
 	var ph message.Header
-	ph.SetContentType(ct, nil)
+	ph.Set("Content-Type", formatted)
 	// mime.FormatMediaType gives RFC 2231 (filename*=utf-8''...) for
 	// non-ASCII names; go-message would use RFC 2047 here instead.
 	disp := mime.FormatMediaType("attachment", map[string]string{"filename": a.Filename})
@@ -204,12 +217,14 @@ func rootHeader(in Input) (gomail.Header, error) {
 	}
 	h.Set("MIME-Version", "1.0")
 	h.Set(MarkerHeader, in.DraftID)
-	date := in.Date
-	if date.IsZero() {
-		date = time.Now()
+	if in.Date.IsZero() {
+		return h, errors.New("date is required")
 	}
-	h.SetDate(date)
-	h.SetMessageID(in.DraftID + "@imap-mcp.invalid")
+	if in.MessageID == "" || hasCRLF(in.MessageID) || strings.ContainsAny(in.MessageID, "<> \t") {
+		return h, errors.New("invalid message id")
+	}
+	h.SetDate(in.Date)
+	h.SetMessageID(in.MessageID)
 	h.SetSubject(in.Subject)
 	for _, f := range []struct {
 		key  string
@@ -261,17 +276,30 @@ func boundary(draftID, role string) string {
 	return "imap-mcp-" + role + "-" + hex.EncodeToString(sum[:12])
 }
 
+// NewMessageID returns a fresh bare Message-ID "uuid@domain", using the
+// domain of from (fallback "localhost").
+func NewMessageID(from string) string {
+	domain := "localhost"
+	if a, err := mail.ParseAddress(from); err == nil {
+		if i := strings.LastIndex(a.Address, "@"); i >= 0 && i+1 < len(a.Address) {
+			domain = a.Address[i+1:]
+		}
+	}
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	b[6] = b[6]&0x0f | 0x40
+	b[8] = b[8]&0x3f | 0x80
+	x := hex.EncodeToString(b[:])
+	return x[:8] + "-" + x[8:12] + "-" + x[12:16] + "-" + x[16:20] + "-" + x[20:] + "@" + domain
+}
+
 type countWriter struct{ n int64 }
 
 func (c *countWriter) Write(p []byte) (int, error) { c.n += int64(len(p)); return len(p), nil }
 
 // Size returns the exact byte length Build would write. Attachments are
-// streamed through a counter, so the same Date must be set in Input for both
-// calls.
+// streamed through a counter, so call it with the same Input as Build.
 func Size(in Input, attachments []Part) (int64, error) {
-	if in.Date.IsZero() {
-		in.Date = time.Now()
-	}
 	var c countWriter
 	if err := Build(&c, in, attachments); err != nil {
 		return 0, err
