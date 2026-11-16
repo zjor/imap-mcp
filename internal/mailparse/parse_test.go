@@ -1,10 +1,15 @@
 package mailparse
 
 import (
+	"bytes"
 	"os"
+	"path/filepath"
 	"reflect"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 )
 
@@ -201,4 +206,49 @@ func TestSnippet(t *testing.T) {
 	if utf8.RuneCountInString(got) != 200 {
 		t.Errorf("runes = %d", utf8.RuneCountInString(got))
 	}
+}
+
+func TestParse_DeepNestingIsBounded(t *testing.T) {
+	const levels = 1000
+	var b strings.Builder
+	b.WriteString("From: a@example.com\nContent-Type: multipart/mixed; boundary=b0\n\n")
+	for i := 0; i < levels; i++ {
+		b.WriteString("--b" + strconv.Itoa(i) + "\nContent-Type: multipart/mixed; boundary=b" + strconv.Itoa(i+1) + "\n\n")
+	}
+	b.WriteString("--b" + strconv.Itoa(levels) + "\nContent-Type: text/plain\n\ndeep\n")
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	start := time.Now()
+	p, err := Parse(strings.NewReader(b.String()))
+	elapsed := time.Since(start)
+	runtime.ReadMemStats(&after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("took %v", elapsed)
+	}
+	if grew := after.TotalAlloc - before.TotalAlloc; grew > 64<<20 {
+		t.Errorf("allocated %d bytes", grew)
+	}
+	if len(p.Attachments) != 1 || len(p.Attachments[0].Part) != maxDepth+1 {
+		t.Errorf("attachments = %+v", p.Attachments)
+	}
+}
+
+func FuzzParse(f *testing.F) {
+	files, _ := filepath.Glob("testdata/*.eml")
+	for _, name := range files {
+		b, err := os.ReadFile(name)
+		if err != nil {
+			f.Fatal(err)
+		}
+		f.Add(b)
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		p, err := Parse(bytes.NewReader(data))
+		if err != nil && strings.Contains(err.Error(), "internal error") {
+			t.Fatalf("panic recovered: %v (%+v)", err, p)
+		}
+	})
 }

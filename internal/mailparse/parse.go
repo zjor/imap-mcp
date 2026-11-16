@@ -4,6 +4,7 @@ package mailparse
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net/mail"
 	"strings"
@@ -51,7 +52,16 @@ type Parsed struct {
 
 // Parse reads a message. It fails only when the top-level header cannot be
 // read. Broken MIME below that degrades to best-effort output.
-func Parse(r io.Reader) (Parsed, error) {
+//
+// A panic inside a third-party parser is recovered: Parse then returns what
+// was parsed so far together with a non-nil error.
+func Parse(r io.Reader) (res Parsed, err error) {
+	var p Parsed
+	defer func() {
+		if rec := recover(); rec != nil {
+			res, err = p, fmt.Errorf("mailparse: internal error: %v", rec)
+		}
+	}()
 	e, err := message.Read(r)
 	if e == nil || (err != nil && !message.IsUnknownCharset(err) && !message.IsUnknownEncoding(err)) {
 		if err == nil {
@@ -59,13 +69,12 @@ func Parse(r io.Reader) (Parsed, error) {
 		}
 		return Parsed{}, err
 	}
-	var p Parsed
 	p.Headers = readHeaders(e.Header)
 	var text, html string
 	var haveText, haveHTML bool
 	w := walker{p: &p, text: &text, html: &html, haveText: &haveText, haveHTML: &haveHTML}
 	if e.MultipartReader() != nil {
-		w.walkMultipart(e, nil)
+		w.walkMultipart(e, nil, 0)
 	} else {
 		w.leaf(e, []int{1})
 	}
@@ -79,13 +88,17 @@ func Parse(r io.Reader) (Parsed, error) {
 	return p, nil
 }
 
+// maxDepth is the deepest multipart nesting that is walked. Deeper parts are
+// listed as plain attachments and not entered.
+const maxDepth = 20
+
 type walker struct {
 	p                  *Parsed
 	text, html         *string
 	haveText, haveHTML *bool
 }
 
-func (w *walker) walkMultipart(e *message.Entity, path []int) {
+func (w *walker) walkMultipart(e *message.Entity, path []int, depth int) {
 	mr := e.MultipartReader()
 	if mr == nil {
 		return
@@ -96,8 +109,8 @@ func (w *walker) walkMultipart(e *message.Entity, path []int) {
 			return // io.EOF or malformed: keep what we have
 		}
 		childPath := append(append([]int{}, path...), i)
-		if child.MultipartReader() != nil {
-			w.walkMultipart(child, childPath)
+		if depth < maxDepth && child.MultipartReader() != nil {
+			w.walkMultipart(child, childPath, depth+1)
 		} else {
 			w.leaf(child, childPath)
 		}
