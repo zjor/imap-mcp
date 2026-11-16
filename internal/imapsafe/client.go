@@ -81,6 +81,11 @@ type Session struct {
 	stop    func() // stops the lifetime watchers
 	release func() // frees the limiter slot
 	once    sync.Once
+	log     *slog.Logger
+
+	examined    string // folder open with EXAMINE; "" when none
+	uidValidity uint32 // UIDVALIDITY of examined
+	busy        bool   // a FetchRaw/FetchPart reader is open
 }
 
 // Caps returns the server capabilities read after login.
@@ -89,12 +94,20 @@ func (s *Session) Caps() Caps { return s.caps }
 // Folders returns the resolved special-use folders.
 func (s *Session) Folders() SpecialFolders { return s.folders }
 
-// Close logs out, closes the connection and frees the limiter slot.
+// Close logs out, closes the connection and frees the limiter slot. When a
+// FetchRaw/FetchPart reader is still open, it skips LOGOUT and the reader
+// fails from then on.
 func (s *Session) Close() error {
 	var err error
 	s.once.Do(func() {
 		s.stop()
-		_ = s.c.Logout().Wait()
+		// With an open reader the connection is mid-literal and LOGOUT
+		// would wait for it, so just close the connection.
+		if !s.busy {
+			start := time.Now()
+			lerr := s.c.Logout().Wait()
+			logCmd(s.log, "LOGOUT", "", 0, start, lerr)
+		}
 		err = s.c.Close()
 		s.release()
 	})
@@ -167,7 +180,10 @@ func (d *Dialer) setup(ctx, setupCtx context.Context, log *slog.Logger, conn net
 	if err != nil {
 		return fail(nil, err)
 	}
-	if err := cl.Login(c.Username, c.Password).Wait(); err != nil {
+	start := time.Now()
+	err = cl.Login(c.Username, c.Password).Wait()
+	logCmd(log, "LOGIN", "", 0, start, err)
+	if err != nil {
 		var ie *imap.Error
 		if errors.As(err, &ie) && ie.Type == imap.StatusResponseTypeNo {
 			log.Warn("imap.login_failed", "code", string(ie.Code))
@@ -175,12 +191,16 @@ func (d *Dialer) setup(ctx, setupCtx context.Context, log *slog.Logger, conn net
 		}
 		return fail(cl, fmt.Errorf("imap login: %w", err))
 	}
+	start = time.Now()
 	capSet, err := cl.Capability().Wait()
+	logCmd(log, "CAPABILITY", "", 0, start, err)
 	if err != nil {
 		return fail(cl, fmt.Errorf("imap capability: %w", err))
 	}
 	log.Debug("imap.capabilities", "caps", capList(capSet))
+	start = time.Now()
 	folders, err := resolveFolders(cl, capSet, d.DraftsOverride, d.SentOverride)
+	logCmd(log, "LIST", "", 0, start, err)
 	if err != nil {
 		return fail(cl, err)
 	}
@@ -198,6 +218,7 @@ func (d *Dialer) setup(ctx, setupCtx context.Context, log *slog.Logger, conn net
 		c:       cl,
 		caps:    toCaps(capSet),
 		folders: folders,
+		log:     log,
 		stop:    func() { timer.Stop(); stopCtx() },
 	}, nil
 }

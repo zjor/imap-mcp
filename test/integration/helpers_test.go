@@ -97,31 +97,50 @@ func (m multiWriter) Write(p []byte) (int, error) {
 // returns their UIDs.
 func seed(t *testing.T, c imapsafe.Credentials, folder string, emlFiles ...string) []uint32 {
 	t.Helper()
-	cl, err := imapclient.DialTLS(c.Host, &imapclient.Options{TLSConfig: testTLS(t)})
-	if err != nil {
-		t.Fatalf("seed dial: %v", err)
-	}
-	defer cl.Close()
-	if err := cl.Login(c.Username, c.Password).Wait(); err != nil {
-		t.Fatalf("seed login: %v", err)
-	}
-	var uids []uint32
+	var raws [][]byte
 	for _, f := range emlFiles {
 		raw, err := os.ReadFile(filepath.Join("testdata", f))
 		if err != nil {
 			t.Fatal(err)
 		}
+		raws = append(raws, raw)
+	}
+	return seedRaw(t, c, folder, raws...)
+}
+
+// rawClient logs in with a plain imapclient, outside imapsafe.
+func rawClient(t *testing.T, c imapsafe.Credentials) *imapclient.Client {
+	t.Helper()
+	cl, err := imapclient.DialTLS(c.Host, &imapclient.Options{TLSConfig: testTLS(t)})
+	if err != nil {
+		t.Fatalf("raw dial: %v", err)
+	}
+	if err := cl.Login(c.Username, c.Password).Wait(); err != nil {
+		cl.Close()
+		t.Fatalf("raw login: %v", err)
+	}
+	return cl
+}
+
+// seedRaw appends messages to folder with a raw client and returns their
+// UIDs. Line endings are normalised to CRLF.
+func seedRaw(t *testing.T, c imapsafe.Credentials, folder string, raws ...[]byte) []uint32 {
+	t.Helper()
+	cl := rawClient(t, c)
+	defer cl.Close()
+	var uids []uint32
+	for i, raw := range raws {
 		raw = bytes.ReplaceAll(bytes.ReplaceAll(raw, []byte("\r\n"), []byte("\n")), []byte("\n"), []byte("\r\n"))
 		cmd := cl.Append(folder, int64(len(raw)), nil)
 		if _, err := cmd.Write(raw); err != nil {
-			t.Fatalf("seed write %s: %v", f, err)
+			t.Fatalf("seed write #%d: %v", i, err)
 		}
 		if err := cmd.Close(); err != nil {
-			t.Fatalf("seed close %s: %v", f, err)
+			t.Fatalf("seed close #%d: %v", i, err)
 		}
 		data, err := cmd.Wait()
 		if err != nil {
-			t.Fatalf("seed append %s: %v", f, err)
+			t.Fatalf("seed append #%d: %v", i, err)
 		}
 		uids = append(uids, uint32(data.UID))
 	}
