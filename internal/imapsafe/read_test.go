@@ -59,6 +59,15 @@ func fakeReadServer(t *testing.T, srv net.Conn, size int) func() []string {
 			mu.Unlock()
 			tag, cmd, _ := strings.Cut(line, " ")
 			switch {
+			case strings.HasPrefix(cmd, "LIST"):
+				// INBOX answers STATUS, Locked refuses it, Shared is \Noselect.
+				fmt.Fprintf(w, "* LIST () \"/\" INBOX\r\n"+
+					"* LIST () \"/\" Locked\r\n"+
+					"* LIST (\\Noselect) \"/\" Shared\r\n%s OK done\r\n", tag)
+			case strings.HasPrefix(cmd, "STATUS INBOX"):
+				fmt.Fprintf(w, "* STATUS INBOX (MESSAGES 3 UNSEEN 1)\r\n%s OK done\r\n", tag)
+			case strings.HasPrefix(cmd, "STATUS"):
+				fmt.Fprintf(w, "%s NO [NOPERM] no read rights\r\n", tag)
 			case strings.HasPrefix(cmd, "EXAMINE"):
 				fmt.Fprintf(w, "* 1 EXISTS\r\n* OK [UIDVALIDITY 7] ok\r\n%s OK [READ-ONLY] done\r\n", tag)
 			case strings.HasPrefix(cmd, "UID FETCH") && strings.Contains(cmd, "BODYSTRUCTURE"):
@@ -206,8 +215,16 @@ func TestReadOps_WireIsReadOnly(t *testing.T) {
 	ctx := context.Background()
 	msg := ids.MessageID{Folder: "INBOX", UIDValidity: 7, UID: 5}
 
-	if _, err := s.ListFolders(ctx); err != nil {
-		t.Error(err)
+	folders, err := s.ListFolders(ctx)
+	if err != nil {
+		t.Fatalf("one refused STATUS failed ListFolders: %v", err)
+	}
+	want := []Folder{
+		{Name: "INBOX", Delimiter: "/", Role: "inbox", Total: 3, Unread: 1, CountsKnown: true},
+		{Name: "Locked", Delimiter: "/"},
+	}
+	if !slices.Equal(folders, want) {
+		t.Errorf("folders = %+v, want %+v", folders, want)
 	}
 	if _, err := s.Search(ctx, "INBOX", SearchCriteria{Subject: "x"}, 9, 5); err != nil {
 		t.Error(err)
@@ -232,12 +249,15 @@ func TestReadOps_WireIsReadOnly(t *testing.T) {
 	s.Close()
 
 	lines := sent()
-	for _, want := range []string{"LIST", "UID SEARCH", "BODY.PEEK[TEXT]", "BODY.PEEK[]", "BODY.PEEK[2]"} {
+	for _, want := range []string{"LIST", "STATUS INBOX", `STATUS "Locked"`, "UID SEARCH", "BODY.PEEK[TEXT]", "BODY.PEEK[]", "BODY.PEEK[2]"} {
 		if !slices.ContainsFunc(lines, func(l string) bool { return strings.Contains(l, want) }) {
 			t.Errorf("no command with %q in %q", want, lines)
 		}
 	}
 	checkReadOnlyWire(t, lines)
+	if slices.ContainsFunc(lines, func(l string) bool { return strings.Contains(l, "STATUS") && strings.Contains(l, "Shared") }) {
+		t.Error("STATUS sent for a \\Noselect folder")
+	}
 }
 
 func TestDecodeTransfer(t *testing.T) {

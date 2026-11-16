@@ -39,9 +39,14 @@ const snippetBytes = 2048
 
 // Folder is one selectable mailbox. Role is "inbox", "drafts", "sent",
 // "trash", "junk", "archive", "all", "flagged" or "".
+//
+// CountsKnown is false when the server refused STATUS for this folder (for
+// example no read rights, or the folder vanished after LIST); Total and
+// Unread are then 0 and mean "unknown".
 type Folder struct {
 	Name, Delimiter, Role string
 	Total, Unread         uint32
+	CountsKnown           bool
 }
 
 // SearchCriteria are ANDed. Zero fields are ignored. Since and Before use
@@ -78,7 +83,9 @@ type Summary struct {
 }
 
 // ListFolders runs LIST and then one STATUS (MESSAGES UNSEEN) per
-// selectable folder. The STATUS commands are pipelined.
+// selectable folder (no STATUS for \Noselect or \NonExistent; those are
+// left out). The STATUS commands are pipelined. A folder whose STATUS the
+// server refuses is kept with CountsKnown false.
 func (s *Session) ListFolders(ctx context.Context) ([]Folder, error) {
 	if err := s.ready(ctx); err != nil {
 		return nil, err
@@ -108,26 +115,36 @@ func (s *Session) ListFolders(ctx context.Context) ([]Folder, error) {
 		cmds = append(cmds, pending{mb, cmd, time.Now()})
 	}
 
+	// A refused STATUS (tagged NO/BAD) affects only that folder: it stays
+	// in the list with CountsKnown false. Other errors (closed connection,
+	// timeout) fail the call.
+	log := logging.From(ctx)
 	var folders []Folder
 	var firstErr error
 	for _, p := range cmds {
 		data, err := p.cmd.Wait()
-		logCmd(logging.From(ctx), "STATUS", p.mb.Mailbox, 0, p.start, err)
-		if err != nil {
-			if firstErr == nil {
-				firstErr = fmt.Errorf("imap status: %w", err)
-			}
-			continue
-		}
+		logCmd(log, "STATUS", p.mb.Mailbox, 0, p.start, err)
 		f := Folder{Name: p.mb.Mailbox, Role: s.role(p.mb)}
 		if p.mb.Delim != 0 {
 			f.Delimiter = string(p.mb.Delim)
 		}
-		if data.NumMessages != nil {
-			f.Total = *data.NumMessages
-		}
-		if data.NumUnseen != nil {
-			f.Unread = *data.NumUnseen
+		var ie *imap.Error
+		switch {
+		case err == nil:
+			f.CountsKnown = true
+			if data.NumMessages != nil {
+				f.Total = *data.NumMessages
+			}
+			if data.NumUnseen != nil {
+				f.Unread = *data.NumUnseen
+			}
+		case errors.As(err, &ie):
+			log.Warn("imap.status_refused", "folder", p.mb.Mailbox, "status", string(ie.Type), "code", string(ie.Code))
+		default:
+			if firstErr == nil {
+				firstErr = fmt.Errorf("imap status: %w", err)
+			}
+			continue
 		}
 		folders = append(folders, f)
 	}
