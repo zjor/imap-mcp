@@ -1,0 +1,4 @@
+.env.local
+dist/
+.superpowers/
+test/integration/certs/
