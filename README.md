@@ -40,7 +40,7 @@ Read this before you give an agent access to a real mailbox.
 4. **Downloaded attachments are untrusted.** They can carry malware or prompt-injection text, for example inside a PDF. Save them to a separate folder and treat their content as data. The server always serves files as `application/octet-stream` with `X-Content-Type-Options: nosniff` and `Content-Security-Policy: sandbox`, so a browser never runs them as HTML on the server's domain.
 5. **Give every person their own access token.** Then you can revoke one person without touching the others.
 6. **The IMAP host allowlist protects other servers.** Without it, a token holder could use the server for password guessing against other mail servers, or to probe your internal network. `IMAP_MCP_IMAP_HOSTS` is that allowlist.
-7. **Resource use.** Every call opens a new IMAP connection. Many IMAP servers limit connections per user and IP (Dovecot: `mail_max_userip_connections`, often 10). The server limits parallel IMAP sessions per user (default 4) and queues the rest. It also has IMAP and HTTP timeouts and an upload size limit.
+7. **Resource use.** Every call opens a new IMAP connection. Many IMAP servers limit connections per user and IP (Dovecot: `mail_max_userip_connections`, often 10). The server limits parallel IMAP sessions per user (default 4) and queues the rest. It also has an upload size limit and these timeouts: 30 s for the IMAP connect and login, 10 s to read HTTP request headers, 120 s for an idle keep-alive connection, and 60 s without data during an upload. There is no overall time limit for a download or an upload, so large files on slow lines still work.
 8. **Ids are not signed.** A client can build any message or attachment id. This is safe, because the IMAP login limits access to the user's own mailbox. The server parses ids strictly and rejects anything else.
 9. **The password still allows SMTP elsewhere.** This server cannot send, but the same password works with SMTP in another tool. App passwords help here too.
 
@@ -213,7 +213,7 @@ All tools return JSON. Lists are paged with `limit` (default 20, max 100) and an
 | `get_thread` | `id` | the thread across the folder and Sent, oldest first, with shortened bodies |
 | `search_contacts` | `query`, `limit` | name, address, last contact date, message count, from INBOX and Sent (last 12 months) |
 | `create_draft` | `mode` (`new`, `reply`, `reply_all`, `forward`), `in_reply_to`, `to`, `cc`, `bcc`, `subject`, `body_text`, `body_html`, `from`, `forward_attachments` | `draft_id`, header summary, `upload_url` |
-| `update_draft` | `draft_id`, any `create_draft` field except `mode`, `remove_attachments` | `draft_id`, `upload_url` |
+| `update_draft` | `draft_id`, any `create_draft` field except `mode`, `in_reply_to` and `forward_attachments`, plus `remove_attachments` | `draft_id`, `upload_url` |
 | `list_drafts` | `limit`, `cursor` | drafts in the Drafts folder; `editable` is true for drafts this server created |
 | `delete_draft` | `draft_id` | ok. Only drafts this server created. |
 
