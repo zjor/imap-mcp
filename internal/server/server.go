@@ -24,6 +24,10 @@ const (
 	serverName      = "imap-mcp"
 	serverVersion   = "0.1.0"
 	shutdownTimeout = 10 * time.Second
+	// idleTimeout closes keep-alive connections without a request. There
+	// is no ReadTimeout (it would cut large uploads; the upload handler
+	// has its own idle limit) and no WriteTimeout (large downloads).
+	idleTimeout = 120 * time.Second
 )
 
 // New builds the production handler. The IMAP dialer uses system roots.
@@ -84,6 +88,7 @@ func ListenAndServe(ctx context.Context, cfg config.Config, h http.Handler) erro
 		Addr:              cfg.Listen,
 		Handler:           h,
 		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       idleTimeout,
 		BaseContext:       func(net.Listener) context.Context { return context.WithoutCancel(ctx) },
 	}
 	logger.Info("server.start", "config", cfg.Redacted())

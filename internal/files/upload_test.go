@@ -4,15 +4,22 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/textproto"
 	"os"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/zjor/imap-mcp/internal/auth"
+	"github.com/zjor/imap-mcp/internal/config"
+	"github.com/zjor/imap-mcp/internal/ids"
 	"github.com/zjor/imap-mcp/internal/imapsafe"
 	"github.com/zjor/imap-mcp/internal/logging"
 	"github.com/zjor/imap-mcp/internal/tools"
@@ -128,4 +135,69 @@ func TestFail_Status(t *testing.T) {
 			t.Errorf("%v: log %q, want %q with draft_id", tt.err, logs, tt.log)
 		}
 	}
+}
+
+// A client that stops sending is cut off after uploadIdle without data,
+// and its temp files are removed.
+func TestUpload_StalledBodyAborted(t *testing.T) {
+	old := uploadIdle
+	uploadIdle = 300 * time.Millisecond
+	defer func() { uploadIdle = old }()
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+
+	var logs syncBuf
+	cfg := config.Config{IMAPHosts: []string{"imap.example.com:993"}, AccessTokens: []string{"tok"}}
+	mux := http.NewServeMux()
+	mux.Handle("/drafts/{draft_id}/attachments", UploadHandler(nil, 1<<20))
+	done := make(chan struct{})
+	h := logging.RequestMiddleware(logging.New(&logs, slog.LevelDebug, "text"))(auth.Middleware(cfg)(mux))
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(done)
+		h.ServeHTTP(w, r)
+	}))
+	defer ts.Close()
+
+	conn, err := net.Dial("tcp", ts.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	part := "--b\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.txt\"\r\n\r\nfirst bytes"
+	fmt.Fprintf(conn, "POST /drafts/%s/attachments HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer tok\r\n"+
+		"X-IMAP-Username: u\r\nX-IMAP-Password: p\r\nContent-Type: multipart/form-data; boundary=b\r\n"+
+		"Content-Length: 100000\r\n\r\n%s", ids.NewDraftID(), part)
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("stalled upload was not aborted")
+	}
+	entries, err := os.ReadDir(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("temp files left: %v", entries)
+	}
+	if !strings.Contains(logs.String(), "msg=upload.aborted") {
+		t.Errorf("no upload.aborted log: %s", logs.String())
+	}
+}
+
+type syncBuf struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuf) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuf) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
 }

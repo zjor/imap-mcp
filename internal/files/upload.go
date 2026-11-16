@@ -22,6 +22,25 @@ import (
 // uploadField is the multipart field name of an uploaded file.
 const uploadField = "file"
 
+// uploadIdle is how long the upload body may send no data before the
+// request is cut off (spec 11.7). Each read with data extends the read
+// deadline, so a large upload on a slow line still works. Tests lower it.
+var uploadIdle = 60 * time.Second
+
+// idleBody extends the connection read deadline after each read with data.
+type idleBody struct {
+	io.ReadCloser
+	rc *http.ResponseController
+}
+
+func (b *idleBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if n > 0 {
+		_ = b.rc.SetReadDeadline(time.Now().Add(uploadIdle))
+	}
+	return n, err
+}
+
 type uploadOut struct {
 	DraftID     string                  `json:"draft_id"`
 	Attachments []tools.DraftAttachment `json:"attachments"`
@@ -65,10 +84,21 @@ func upload(d *imapsafe.Dialer, maxUpload int64, w http.ResponseWriter, r *http.
 			}
 		}
 	}()
-	r.Body = http.MaxBytesReader(w, r.Body, maxUpload)
-	if err := receive(r, &files); err != nil {
+	// Servers without deadline support (tests with a recorder) just
+	// skip the idle limit.
+	rc := http.NewResponseController(w)
+	_ = rc.SetReadDeadline(time.Now().Add(uploadIdle))
+	r.Body = http.MaxBytesReader(w, &idleBody{ReadCloser: r.Body, rc: rc}, maxUpload)
+	err := receive(r, &files)
+	// Clear the deadline: the body is read, and a passed deadline would
+	// make the server's background read cancel the request context.
+	_ = rc.SetReadDeadline(time.Time{})
+	if err != nil {
 		var mbe *http.MaxBytesError
 		switch {
+		case errors.Is(err, os.ErrDeadlineExceeded):
+			logging.From(ctx).Warn("upload.aborted", "draft_id", draftID, "reason", "no data for too long", "idle_s", uploadIdle.Seconds())
+			writeError(ctx, w, http.StatusRequestTimeout, "bad_argument", "upload stalled: no data for too long")
 		case errors.As(err, &mbe):
 			logging.From(ctx).Warn("upload.rejected", "status", http.StatusRequestEntityTooLarge, "code", "too_large",
 				"draft_id", draftID, "limit", maxUpload)
@@ -151,6 +181,9 @@ func readErr(err error) error {
 	var mbe *http.MaxBytesError
 	if errors.As(err, &mbe) {
 		return err
+	}
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		return err // idle timeout, see uploadIdle
 	}
 	var pe *os.PathError
 	if errors.As(err, &pe) {
