@@ -103,6 +103,8 @@ func TestClassify_NeverLeaksServerText(t *testing.T) {
 		{imapsafe.ErrStale, codeStaleID},
 		{fmt.Errorf("x: %w", imapsafe.ErrNotFound), codeNotFound},
 		{imapsafe.ErrUnsupported, codeUnsupported},
+		{imapsafe.ErrNotEditable, codeNotEditable},
+		{fmt.Errorf("x: %w", imapsafe.ErrTooLarge), codeTooLarge},
 		{fmt.Errorf("imap examine: %w", &imap.Error{Type: imap.StatusResponseTypeNo, Code: imap.ResponseCodeNonExistent, Text: serverText}), codeNotFound},
 		{fmt.Errorf("imap fetch: %w", &imap.Error{Type: imap.StatusResponseTypeNo, Text: serverText}), codeIMAPError},
 		{errors.New(serverText), codeIMAPError},

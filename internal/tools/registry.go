@@ -39,6 +39,7 @@ func Register(s *mcp.Server, deps Deps) {
 	registerRead(s, deps)
 	registerThread(s, deps)
 	registerContacts(s, deps)
+	registerDrafts(s, deps)
 }
 
 // mailbox is the part of *imapsafe.Session the tools use. Tests use a fake.
@@ -61,6 +62,9 @@ var _ mailbox = (*imapsafe.Session)(nil)
 // result and the number of items in it (for the log line).
 type runFunc[In any] func(ctx context.Context, s mailbox, in In) (out any, count int, err error)
 
+// sessionFunc is runFunc with the full session, for the draft tools.
+type sessionFunc[In any] func(ctx context.Context, s *imapsafe.Session, in In) (out any, count int, err error)
+
 // addTool registers a read-only tool. Each call opens an IMAP session,
 // runs fn, closes the session and logs one tool.call line. safeArgs returns
 // the log attributes that are safe at info level (spec 7.8).
@@ -70,6 +74,14 @@ func addTool[In any](srv *mcp.Server, deps Deps, name, description string, safeA
 		Description: description + " " + injectionNote,
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}
+	addSessionTool(srv, deps, tool, safeArgs, func(ctx context.Context, s *imapsafe.Session, in In) (any, int, error) {
+		return fn(ctx, s, in)
+	})
+}
+
+// addSessionTool registers tool as described for addTool.
+func addSessionTool[In any](srv *mcp.Server, deps Deps, tool *mcp.Tool, safeArgs func(In) []any, fn sessionFunc[In]) {
+	name := tool.Name
 	mcp.AddTool(srv, tool, func(ctx context.Context, _ *mcp.CallToolRequest, in In) (*mcp.CallToolResult, any, error) {
 		start := time.Now()
 		out, count, err := run(ctx, deps, in, fn)
@@ -95,7 +107,7 @@ func addTool[In any](srv *mcp.Server, deps Deps, name, description string, safeA
 	})
 }
 
-func run[In any](ctx context.Context, deps Deps, in In, fn runFunc[In]) (any, int, error) {
+func run[In any](ctx context.Context, deps Deps, in In, fn sessionFunc[In]) (any, int, error) {
 	creds, ok := auth.CredentialsFrom(ctx)
 	if !ok {
 		return nil, 0, imapsafe.ErrAuth

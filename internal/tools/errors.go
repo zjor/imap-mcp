@@ -22,6 +22,8 @@ const (
 	codeUnsupported = "unsupported"
 	codeIMAPError   = "imap_error"
 	codeBadArgument = "bad_argument"
+	codeNotEditable = "not_editable"
+	codeTooLarge    = "too_large"
 )
 
 // argError is a caller mistake in the arguments. Its text goes to the
@@ -44,6 +46,10 @@ func classify(err error) (code, message string) {
 		return codeBadID, "invalid id"
 	case errors.Is(err, imapsafe.ErrAuth):
 		return codeAuthFailed, "IMAP login failed: wrong username or password"
+	case errors.Is(err, imapsafe.ErrNotEditable):
+		return codeNotEditable, "draft not found or not editable"
+	case errors.Is(err, imapsafe.ErrTooLarge):
+		return codeTooLarge, "draft is larger than the server accepts"
 	case errors.Is(err, imapsafe.ErrStale):
 		return codeStaleID, "message id is stale, search again"
 	case errors.Is(err, imapsafe.ErrNotFound):

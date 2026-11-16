@@ -341,12 +341,21 @@ func ReplyHeaders(orig mailparse.Headers, all bool, self string) (to, cc []strin
 	return
 }
 
-// prefixed adds prefix unless the subject already starts with Re:, Fwd: or
-// Fw: (any case).
-func prefixed(subject, prefix string) string {
+// ForwardSubject adds "Fwd:" unless the subject already starts with Fwd:
+// or Fw: (any case).
+func ForwardSubject(subject string) string {
+	return prefixed(subject, "Fwd:", "fwd:", "fw:")
+}
+
+// prefixed adds prefix unless the subject already starts with one of skip
+// (lower case; default Re:, Fwd: and Fw:, any case).
+func prefixed(subject, prefix string, skip ...string) string {
+	if len(skip) == 0 {
+		skip = []string{"re:", "fwd:", "fw:"}
+	}
 	s := strings.TrimSpace(subject)
 	l := strings.ToLower(s)
-	for _, p := range []string{"re:", "fwd:", "fw:"} {
+	for _, p := range skip {
 		if strings.HasPrefix(l, p) {
 			return s
 		}

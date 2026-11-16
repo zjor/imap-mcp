@@ -110,8 +110,16 @@ func TestReplyHeaders_Prefix(t *testing.T) {
 			t.Errorf("%q: got %q want %q", in, got, want)
 		}
 	}
-	if got := prefixed("x", "Fwd:"); got != "Fwd: x" {
-		t.Errorf("got %q", got)
+}
+
+func TestForwardSubject(t *testing.T) {
+	for in, want := range map[string]string{
+		"x": "Fwd: x", " x ": "Fwd: x", "Fwd: x": "Fwd: x", "FWD: x": "FWD: x", "Fw: x": "Fw: x",
+		"Re: x": "Fwd: Re: x", "": "Fwd: ",
+	} {
+		if got := ForwardSubject(in); got != want {
+			t.Errorf("%q: got %q want %q", in, got, want)
+		}
 	}
 }
 

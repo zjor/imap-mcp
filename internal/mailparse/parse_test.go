@@ -252,3 +252,14 @@ func FuzzParse(f *testing.F) {
 		}
 	})
 }
+
+func TestParse_Bcc(t *testing.T) {
+	p, err := Parse(strings.NewReader("From: a@example.com\r\nBcc: Eva <eva@example.com>, x@example.com\r\n\r\nhi\r\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Address{{"Eva", "eva@example.com"}, {"", "x@example.com"}}
+	if !reflect.DeepEqual(p.Headers.Bcc, want) {
+		t.Errorf("bcc = %+v", p.Headers.Bcc)
+	}
+}

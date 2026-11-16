@@ -533,7 +533,7 @@ func TestToolDescriptions_HaveInjectionNote(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	read := []string{"list_folders", "search_emails", "read_email", "get_thread", "search_contacts"}
+	read := []string{"list_folders", "search_emails", "read_email", "get_thread", "search_contacts", "list_drafts"}
 	found := 0
 	for _, tool := range res.Tools {
 		if slices.Contains(read, tool.Name) {

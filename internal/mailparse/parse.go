@@ -26,6 +26,7 @@ type Headers struct {
 	MessageID, InReplyTo  string
 	References            []string
 	From, To, Cc, ReplyTo []Address
+	Bcc                   []Address // present in drafts only
 	Subject               string
 	Date                  time.Time
 }
@@ -175,6 +176,7 @@ func readHeaders(h message.Header) Headers {
 	out.From = addrs(mh, "From")
 	out.To = addrs(mh, "To")
 	out.Cc = addrs(mh, "Cc")
+	out.Bcc = addrs(mh, "Bcc")
 	out.ReplyTo = addrs(mh, "Reply-To")
 	if s, err := mh.Subject(); err == nil {
 		out.Subject = s
