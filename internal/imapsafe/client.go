@@ -143,6 +143,13 @@ func (d *Dialer) open(ctx context.Context, log *slog.Logger, c Credentials) (*Se
 	if err != nil {
 		return nil, fmt.Errorf("imap dial: %w", err)
 	}
+	return d.setup(ctx, setupCtx, log, conn, port == "143", host, c)
+}
+
+// setup runs TLS, login, CAPABILITY and LIST on a connected conn. startTLS
+// selects STARTTLS instead of implicit TLS. setupCtx bounds the whole setup;
+// ctx bounds the session lifetime.
+func (d *Dialer) setup(ctx, setupCtx context.Context, log *slog.Logger, conn net.Conn, startTLS bool, host string, c Credentials) (*Session, error) {
 	// When the setup budget runs out, close the connection so no step hangs.
 	stopSetup := context.AfterFunc(setupCtx, func() { conn.Close() })
 	fail := func(cl *imapclient.Client, err error) (*Session, error) {
@@ -156,7 +163,7 @@ func (d *Dialer) open(ctx context.Context, log *slog.Logger, c Credentials) (*Se
 		return nil, err
 	}
 
-	cl, err := newClient(setupCtx, conn, port, d.tlsConfig(host))
+	cl, err := newClient(setupCtx, conn, startTLS, d.tlsConfig(host))
 	if err != nil {
 		return fail(nil, err)
 	}
@@ -195,12 +202,12 @@ func (d *Dialer) open(ctx context.Context, log *slog.Logger, c Credentials) (*Se
 	}, nil
 }
 
-// newClient starts TLS: STARTTLS on port 143 (refused when the server does
-// not offer it), implicit TLS on any other port. It never logs in over plain
-// text.
-func newClient(ctx context.Context, conn net.Conn, port string, cfg *tls.Config) (*imapclient.Client, error) {
+// newClient starts TLS: STARTTLS when startTLS is set (an error when the
+// server refuses it), implicit TLS otherwise. It never returns a client on a
+// plain-text connection.
+func newClient(ctx context.Context, conn net.Conn, startTLS bool, cfg *tls.Config) (*imapclient.Client, error) {
 	opts := &imapclient.Options{TLSConfig: cfg}
-	if port == "143" {
+	if startTLS {
 		cl, err := imapclient.NewStartTLS(conn, opts)
 		if err != nil {
 			return nil, fmt.Errorf("imap starttls failed, refusing plain IMAP: %w", err)
