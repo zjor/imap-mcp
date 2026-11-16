@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
+	"unicode/utf8"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -28,25 +30,46 @@ type msgRef struct {
 
 func registerThread(s *mcp.Server, deps Deps) {
 	addTool(s, deps, "get_thread",
-		"Get all messages of the thread that holds a message, from its folder and from Sent, oldest first. Same shape as read_email, but quoted text is removed from each body.",
+		"Get the messages of the thread that holds a message, from its folder and from Sent, oldest first. Same shape as read_email, but quoted text is removed from each body and each body is cut at 64 KiB (body_truncated). At most the newest 50 messages are returned (truncated: true when there were more).",
 		func(in threadIn) []any { return []any{"id", in.ID} },
-		func(ctx context.Context, s *imapsafe.Session, in threadIn) (any, int, error) {
+		func(ctx context.Context, s mailbox, in threadIn) (any, int, error) {
 			id, err := ids.DecodeMessage(in.ID)
 			if err != nil {
 				return nil, 0, err
 			}
-			msgs, err := getThread(ctx, s, deps, id)
+			out, err := getThread(ctx, s, deps, id)
 			if err != nil {
 				return nil, 0, err
 			}
-			return map[string]any{"messages": msgs}, len(msgs), nil
+			return out, len(out.Messages), nil
 		})
 }
 
-func getThread(ctx context.Context, s *imapsafe.Session, deps Deps, start ids.MessageID) ([]emailOut, error) {
+// maxThreadMessages caps the messages get_thread reads; the newest are
+// kept. A variable so tests can lower it.
+var maxThreadMessages = 50
+
+// maxThreadBody caps each body get_thread returns, in bytes of text.
+const maxThreadBody = 64 << 10
+
+type threadOut struct {
+	Messages []emailOut `json:"messages"`
+	// Truncated is true when the thread had more than maxThreadMessages
+	// messages and only the newest were returned.
+	Truncated bool `json:"truncated,omitempty"`
+}
+
+// threadCand is a thread member found by THREAD or a header search, before
+// its full message is read.
+type threadCand struct {
+	id   ids.MessageID
+	date time.Time
+}
+
+func getThread(ctx context.Context, s mailbox, deps Deps, start ids.MessageID) (threadOut, error) {
 	first, p, err := readMessage(ctx, s, deps, start, "text")
 	if err != nil {
-		return nil, err
+		return threadOut{}, err
 	}
 	refs := messageIDs(p.Headers.MessageID, p.Headers.InReplyTo, p.Headers.References)
 
@@ -56,65 +79,95 @@ func getThread(ctx context.Context, s *imapsafe.Session, deps Deps, start ids.Me
 	switch {
 	case errors.Is(err, imapsafe.ErrUnsupported):
 		if uids, err = searchRefs(ctx, s, start.Folder, refs); err != nil {
-			return nil, err
+			return threadOut{}, err
 		}
 	case errors.Is(err, imapsafe.ErrNotFound):
 		uids = nil
 	case err != nil:
-		return nil, err
+		return threadOut{}, err
 	}
 
+	// Collect the members with ENVELOPE only; full messages are read
+	// after the cap.
+	cands := []threadCand{{id: start, date: first.Headers.Date}}
 	seen := map[msgRef]bool{{start.Folder, start.UID}: true}
-	msgs := []emailOut{first}
-	read := func(folder string, uv uint32, uid uint32) error {
-		if seen[msgRef{folder, uid}] {
-			return nil
+	add := func(folder string, uv uint32, uids []uint32) error {
+		var todo []uint32
+		for _, u := range uids {
+			if !seen[msgRef{folder, u}] {
+				seen[msgRef{folder, u}] = true
+				todo = append(todo, u)
+			}
 		}
-		seen[msgRef{folder, uid}] = true
-		e, p, err := readMessage(ctx, s, deps, ids.MessageID{Folder: folder, UIDValidity: uv, UID: uid}, "text")
-		if errors.Is(err, imapsafe.ErrNotFound) {
-			return nil // removed meanwhile
-		}
+		sums, err := s.FetchEnvelopes(ctx, folder, todo)
 		if err != nil {
 			return err
 		}
-		refs = append(refs, messageIDs(p.Headers.MessageID, p.Headers.InReplyTo, p.Headers.References)...)
-		msgs = append(msgs, e)
+		for _, m := range sums {
+			cands = append(cands, threadCand{id: ids.MessageID{Folder: folder, UIDValidity: uv, UID: m.UID}, date: msgDate(m)})
+			refs = append(refs, messageIDs(m.MessageID, "", m.InReplyTo)...)
+		}
 		return nil
 	}
-	for _, u := range uids {
-		if err := read(start.Folder, start.UIDValidity, u); err != nil {
-			return nil, err
-		}
+	if err := add(start.Folder, start.UIDValidity, uids); err != nil {
+		return threadOut{}, err
 	}
 
 	// Replies the user sent live in Sent.
 	if sent := s.Folders().Sent; sent != "" && sent != start.Folder {
 		uv, err := s.Examine(ctx, sent)
 		if err != nil {
-			return nil, err
+			return threadOut{}, err
 		}
 		found, err := searchRefs(ctx, s, sent, dedupe(refs))
 		if err != nil {
-			return nil, err
+			return threadOut{}, err
 		}
-		for _, u := range found {
-			if err := read(sent, uv, u); err != nil {
-				return nil, err
-			}
+		if err := add(sent, uv, found); err != nil {
+			return threadOut{}, err
 		}
 	}
 
-	for i := range msgs {
-		msgs[i].UntrustedContent.Body = stripQuoted(msgs[i].UntrustedContent.Body)
+	var out threadOut
+	slices.SortStableFunc(cands, func(a, b threadCand) int { return a.date.Compare(b.date) })
+	if len(cands) > maxThreadMessages {
+		cands = cands[len(cands)-maxThreadMessages:]
+		out.Truncated = true
 	}
-	slices.SortStableFunc(msgs, func(a, b emailOut) int { return a.Headers.Date.Compare(b.Headers.Date) })
-	return msgs, nil
+	for _, c := range cands {
+		e := first
+		if c.id != start {
+			e, _, err = readMessage(ctx, s, deps, c.id, "text")
+			if errors.Is(err, imapsafe.ErrNotFound) {
+				continue // removed meanwhile
+			}
+			if err != nil {
+				return threadOut{}, err
+			}
+		}
+		body, cut := capText(stripQuoted(e.UntrustedContent.Body), maxThreadBody)
+		e.UntrustedContent.Body = body
+		e.BodyTruncated = e.BodyTruncated || cut
+		out.Messages = append(out.Messages, e)
+	}
+	slices.SortStableFunc(out.Messages, func(a, b emailOut) int { return a.Headers.Date.Compare(b.Headers.Date) })
+	return out, nil
+}
+
+// capText cuts s to at most n bytes at a rune boundary.
+func capText(s string, n int) (string, bool) {
+	if len(s) <= n {
+		return s, false
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n], true
 }
 
 // searchRefs returns the UIDs (ascending) in folder whose Message-ID,
 // In-Reply-To or References header holds one of refs.
-func searchRefs(ctx context.Context, s *imapsafe.Session, folder string, refs []string) ([]uint32, error) {
+func searchRefs(ctx context.Context, s mailbox, folder string, refs []string) ([]uint32, error) {
 	var all []uint32
 	for _, r := range refs {
 		for _, h := range []string{"Message-ID", "In-Reply-To", "References"} {

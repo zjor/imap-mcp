@@ -5,14 +5,17 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"strings"
 	"time"
 
+	"github.com/emersion/go-imap/v2"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/zjor/imap-mcp/internal/ids"
 	"github.com/zjor/imap-mcp/internal/imapsafe"
+	"github.com/zjor/imap-mcp/internal/logging"
 	"github.com/zjor/imap-mcp/internal/mailparse"
 )
 
@@ -89,7 +92,7 @@ func (in searchIn) filterNames() []string {
 	return names
 }
 
-func searchEmails(ctx context.Context, s *imapsafe.Session, in searchIn) (any, int, error) {
+func searchEmails(ctx context.Context, s mailbox, in searchIn) (any, int, error) {
 	debugFilters(ctx, "search_emails", "from", in.From, "to", in.To, "cc", in.Cc, "subject", in.Subject,
 		"text", in.Text, "since", in.Since, "before", in.Before)
 	crit := imapsafe.SearchCriteria{From: in.From, To: in.To, Cc: in.Cc, Subject: in.Subject, Text: in.Text, Unread: in.Unread}
@@ -103,16 +106,19 @@ func searchEmails(ctx context.Context, s *imapsafe.Session, in searchIn) (any, i
 	limit := clampLimit(in.Limit)
 
 	var sources []*source
+	all := false
 	if in.Cursor != "" {
 		cur, err := decodeCursor(in.Cursor)
 		if err != nil {
 			return nil, 0, err
 		}
+		all = cur.All
 		for _, f := range cur.Folders {
 			sources = append(sources, &source{folder: f.Name, uv: f.UIDValidity, before: f.Before})
 		}
 	} else {
-		folders, err := searchFolders(ctx, s, folderArg(in))
+		var folders []string
+		folders, all, err = searchFolders(ctx, s, folderArg(in))
 		if err != nil {
 			return nil, 0, err
 		}
@@ -121,35 +127,27 @@ func searchEmails(ctx context.Context, s *imapsafe.Session, in searchIn) (any, i
 		}
 	}
 
-	// Find the matching UIDs of each folder.
+	// Find the matching UIDs of each folder. In "all" mode a folder the
+	// server refuses (tagged NO, for example no read rights) is skipped.
 	live := sources[:0]
 	for _, src := range sources {
-		uv, err := s.Examine(ctx, src.folder)
-		if err != nil {
-			return nil, 0, err
-		}
-		if src.uv != 0 && src.uv != uv {
-			return nil, 0, imapsafe.ErrStale
-		}
-		src.uv = uv
-		src.uids, err = s.Search(ctx, src.folder, crit, src.before, 0)
-		if err != nil {
-			return nil, 0, err
-		}
-		if len(src.uids) == 0 {
+		err := src.search(ctx, s, crit)
+		var ie *imap.Error
+		if all && errors.As(err, &ie) {
+			logging.From(ctx).Warn("search.folder_skipped", "folder", src.folder, "status", string(ie.Type), "code", string(ie.Code))
 			continue
 		}
-		if src.before == 0 {
-			// Fix the upper bound now, so mail that arrives later never
-			// shows up in later pages.
-			src.before = src.uids[0] + 1
+		if err != nil {
+			return nil, 0, err
 		}
-		live = append(live, src)
+		if len(src.uids) > 0 {
+			live = append(live, src)
+		}
 	}
 	sources = live
 
 	// Merge the folders by date, newest first. Each folder is consumed in
-	// UID order, so the cursor (lowest UID taken) leaves no gaps.
+	// UID order, so the cursor (lowest UID consumed) leaves no gaps.
 	out := searchOut{Messages: []summaryOut{}}
 	for len(out.Messages) < limit {
 		var best *source
@@ -169,10 +167,10 @@ func searchEmails(ctx context.Context, s *imapsafe.Session, in searchIn) (any, i
 		out.Messages = append(out.Messages, toSummaryOut(best.folder, best.uv, best.take()))
 	}
 
-	var next cursor
+	next := cursor{All: all}
 	for _, src := range sources {
 		if !src.done() {
-			next.Folders = append(next.Folders, cursorFolder{Name: src.folder, UIDValidity: src.uv, Before: src.before})
+			next.Folders = append(next.Folders, cursorFolder{Name: src.folder, UIDValidity: src.uv, Before: src.bound()})
 		}
 	}
 	if len(next.Folders) > 0 {
@@ -184,53 +182,117 @@ func searchEmails(ctx context.Context, s *imapsafe.Session, in searchIn) (any, i
 
 // searchFolders resolves the folder argument. "all" means every folder
 // except Trash and Junk.
-func searchFolders(ctx context.Context, s *imapsafe.Session, folder string) ([]string, error) {
+func searchFolders(ctx context.Context, s mailbox, folder string) (names []string, all bool, err error) {
 	if !strings.EqualFold(folder, "all") {
-		return []string{folder}, nil
+		return []string{folder}, false, nil
 	}
 	list, err := s.ListFolders(ctx)
 	if err != nil {
-		return nil, err
+		return nil, true, err
 	}
-	var names []string
 	for _, f := range list {
 		if f.Role != "trash" && f.Role != "junk" {
 			names = append(names, f.Name)
 		}
 	}
-	return names, nil
+	return names, true, nil
 }
+
+// scanBudget is the most candidate messages the has_attachments filter
+// checks per folder in one call. A variable so tests can lower it.
+var scanBudget = 1000
+
+// scanBatch is how many BODYSTRUCTUREs one filter FETCH asks for.
+const scanBatch = 100
 
 // source walks the matching messages of one folder, newest UID first.
+//
+// Every UID at or above before has been consumed. take moves before to the
+// taken UID; bound also counts UIDs the filter rejected when nothing that
+// passed is still waiting.
 type source struct {
-	folder string
-	uv     uint32
-	before uint32             // only UIDs below this are left
-	uids   []uint32           // matching, not fetched yet
-	buf    []imapsafe.Summary // fetched, passed the filter, not taken yet
+	folder  string
+	uv      uint32
+	before  uint32             // only UIDs below this are left
+	uids    []uint32           // matching, not checked by the filter yet
+	passed  []uint32           // passed the filter, no summary yet
+	buf     []imapsafe.Summary // summary fetched, not taken yet
+	scanned int                // UIDs checked by the filter in this call
+	lowest  uint32             // lowest UID checked by the filter; 0 = none
 }
 
-// peek returns the next message that passes the has_attachments filter,
-// fetching batches of summaries as needed; nil when the folder is done.
-func (src *source) peek(ctx context.Context, s *imapsafe.Session, batch int, hasAtt *bool) (*imapsafe.Summary, error) {
-	for len(src.buf) == 0 && len(src.uids) > 0 {
-		n := min(batch, len(src.uids))
-		chunk := src.uids[:n]
-		src.uids = src.uids[n:]
+// search opens the folder, checks UIDVALIDITY and finds the matching UIDs
+// below the cursor bound.
+func (src *source) search(ctx context.Context, s mailbox, crit imapsafe.SearchCriteria) error {
+	uv, err := s.Examine(ctx, src.folder)
+	if err != nil {
+		return err
+	}
+	if src.uv != 0 && src.uv != uv {
+		return imapsafe.ErrStale
+	}
+	src.uv = uv
+	if src.uids, err = s.Search(ctx, src.folder, crit, src.before, 0); err != nil {
+		return err
+	}
+	if src.before == 0 && len(src.uids) > 0 {
+		// Fix the upper bound now, so mail that arrives later never shows
+		// up in later pages.
+		src.before = src.uids[0] + 1
+	}
+	return nil
+}
+
+// peek returns the next message that passes the has_attachments filter;
+// nil when the folder is done or the scan budget of this call is used up.
+// The filter fetches BODYSTRUCTURE only; summaries are fetched only for
+// messages that pass, batch at a time.
+func (src *source) peek(ctx context.Context, s mailbox, batch int, hasAtt *bool) (*imapsafe.Summary, error) {
+	for len(src.buf) == 0 {
+		if len(src.passed) == 0 {
+			if err := src.scan(ctx, s, hasAtt); err != nil {
+				return nil, err
+			}
+			if len(src.passed) == 0 {
+				return nil, nil
+			}
+		}
+		n := min(batch, len(src.passed))
+		chunk := src.passed[:n]
+		src.passed = src.passed[n:]
 		sums, err := s.FetchSummaries(ctx, src.folder, chunk)
 		if err != nil {
 			return nil, err
 		}
-		for _, m := range sums {
-			if hasAtt == nil || m.HasAttachments == *hasAtt {
-				src.buf = append(src.buf, m)
+		src.buf = append(src.buf, sums...)
+	}
+	return &src.buf[0], nil
+}
+
+// scan moves candidates from uids to passed until some pass, uids is
+// empty or the budget is used up.
+func (src *source) scan(ctx context.Context, s mailbox, hasAtt *bool) error {
+	if hasAtt == nil {
+		src.passed, src.uids = src.uids, nil
+		return nil
+	}
+	for len(src.passed) == 0 && len(src.uids) > 0 && src.scanned < scanBudget {
+		n := min(scanBatch, len(src.uids), scanBudget-src.scanned)
+		chunk := src.uids[:n]
+		src.uids = src.uids[n:]
+		src.scanned += n
+		src.lowest = chunk[n-1]
+		att, err := s.HasAttachments(ctx, src.folder, chunk)
+		if err != nil {
+			return err
+		}
+		for _, u := range chunk {
+			if has, ok := att[u]; ok && has == *hasAtt {
+				src.passed = append(src.passed, u)
 			}
 		}
 	}
-	if len(src.buf) == 0 {
-		return nil, nil
-	}
-	return &src.buf[0], nil
+	return nil
 }
 
 // take removes the message peek returned and moves the cursor below it.
@@ -241,7 +303,17 @@ func (src *source) take() imapsafe.Summary {
 	return m
 }
 
-func (src *source) done() bool { return len(src.buf) == 0 && len(src.uids) == 0 }
+// bound is the cursor value: UIDs below it are left for the next page.
+func (src *source) bound() uint32 {
+	if len(src.buf) == 0 && len(src.passed) == 0 && src.lowest != 0 && src.lowest < src.before {
+		return src.lowest
+	}
+	return src.before
+}
+
+func (src *source) done() bool {
+	return len(src.buf) == 0 && len(src.passed) == 0 && len(src.uids) == 0
+}
 
 func msgDate(m imapsafe.Summary) time.Time {
 	if !m.Date.IsZero() {
@@ -300,6 +372,7 @@ func snippet(m imapsafe.Summary) string {
 // bound below which the next page starts. Folders that are done are left
 // out.
 type cursor struct {
+	All     bool           `json:"a,omitempty"` // folder "all": skip refused folders
 	Folders []cursorFolder `json:"f"`
 }
 

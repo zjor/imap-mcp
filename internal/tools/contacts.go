@@ -33,7 +33,7 @@ func registerContacts(s *mcp.Server, deps Deps) {
 	addTool(s, deps, "search_contacts",
 		"Find people by name or address in the From, To and Cc of messages in INBOX and Sent from the last 12 months. Returns name, email, last contact date and message count, most recent contact first.",
 		func(in contactsIn) []any { return []any{"limit", clampLimit(in.Limit), "filters", []string{"query"}} },
-		func(ctx context.Context, s *imapsafe.Session, in contactsIn) (any, int, error) {
+		func(ctx context.Context, s mailbox, in contactsIn) (any, int, error) {
 			debugFilters(ctx, "search_contacts", "query", in.Query)
 			if strings.TrimSpace(in.Query) == "" {
 				return nil, 0, badArg("query must not be empty")
@@ -46,7 +46,7 @@ func registerContacts(s *mcp.Server, deps Deps) {
 		})
 }
 
-func searchContacts(ctx context.Context, s *imapsafe.Session, query string, limit int) ([]contactOut, error) {
+func searchContacts(ctx context.Context, s mailbox, query string, limit int) ([]contactOut, error) {
 	since := time.Now().AddDate(0, -contactMonths, 0)
 	q := strings.ToLower(query)
 	byEmail := map[string]*contactOut{}

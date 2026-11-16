@@ -9,7 +9,6 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/zjor/imap-mcp/internal/ids"
-	"github.com/zjor/imap-mcp/internal/imapsafe"
 	"github.com/zjor/imap-mcp/internal/mailparse"
 )
 
@@ -48,15 +47,17 @@ type emailOut struct {
 		Subject string `json:"subject"`
 		Body    string `json:"body"`
 	} `json:"untrusted_content"`
-	Attachments []attachmentOut `json:"attachments"`
-	RawHeaders  *string         `json:"raw_headers,omitempty"`
+	// BodyTruncated is true when the body was cut to a size limit.
+	BodyTruncated bool            `json:"body_truncated,omitempty"`
+	Attachments   []attachmentOut `json:"attachments"`
+	RawHeaders    *string         `json:"raw_headers,omitempty"`
 }
 
 func registerRead(s *mcp.Server, deps Deps) {
 	addTool(s, deps, "read_email",
 		"Read one message: headers, body and attachments. Each attachment has a download_url; fetch it with an HTTP GET that sends the same auth headers as this server.",
 		func(in readIn) []any { return []any{"id", in.ID, "format", in.Format} },
-		func(ctx context.Context, s *imapsafe.Session, in readIn) (any, int, error) {
+		func(ctx context.Context, s mailbox, in readIn) (any, int, error) {
 			switch in.Format {
 			case "", "text", "html", "raw_headers":
 			default:
@@ -76,7 +77,7 @@ func registerRead(s *mcp.Server, deps Deps) {
 
 // readMessage fetches and parses one message. format is as for read_email.
 // It also returns the parsed message for callers that need more of it.
-func readMessage(ctx context.Context, s *imapsafe.Session, deps Deps, id ids.MessageID, format string) (emailOut, mailparse.Parsed, error) {
+func readMessage(ctx context.Context, s mailbox, deps Deps, id ids.MessageID, format string) (emailOut, mailparse.Parsed, error) {
 	r, err := s.FetchRaw(ctx, id)
 	if err != nil {
 		return emailOut{}, mailparse.Parsed{}, err
@@ -114,6 +115,7 @@ func readMessage(ctx context.Context, s *imapsafe.Session, deps Deps, id ids.Mes
 	}
 	e.UntrustedContent.Subject = p.Headers.Subject
 	e.UntrustedContent.Body = p.Text
+	e.BodyTruncated = p.Truncated
 	if format == "html" && p.HTML != "" {
 		e.UntrustedContent.Body = p.HTML
 	}

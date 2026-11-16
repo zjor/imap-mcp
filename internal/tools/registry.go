@@ -4,6 +4,7 @@ package tools
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"strings"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/zjor/imap-mcp/internal/auth"
+	"github.com/zjor/imap-mcp/internal/ids"
 	"github.com/zjor/imap-mcp/internal/imapsafe"
 	"github.com/zjor/imap-mcp/internal/logging"
 )
@@ -39,9 +41,25 @@ func Register(s *mcp.Server, deps Deps) {
 	registerContacts(s, deps)
 }
 
+// mailbox is the part of *imapsafe.Session the tools use. Tests use a fake.
+type mailbox interface {
+	ListFolders(ctx context.Context) ([]imapsafe.Folder, error)
+	Folders() imapsafe.SpecialFolders
+	Examine(ctx context.Context, folder string) (uint32, error)
+	Search(ctx context.Context, folder string, c imapsafe.SearchCriteria, beforeUID uint32, limit int) ([]uint32, error)
+	SearchHeader(ctx context.Context, folder, header, value string) ([]uint32, error)
+	Thread(ctx context.Context, folder string, uid uint32) ([]uint32, error)
+	HasAttachments(ctx context.Context, folder string, uids []uint32) (map[uint32]bool, error)
+	FetchSummaries(ctx context.Context, folder string, uids []uint32) ([]imapsafe.Summary, error)
+	FetchEnvelopes(ctx context.Context, folder string, uids []uint32) ([]imapsafe.Summary, error)
+	FetchRaw(ctx context.Context, id ids.MessageID) (io.ReadCloser, error)
+}
+
+var _ mailbox = (*imapsafe.Session)(nil)
+
 // runFunc does the work of one tool on an open session. It returns the
 // result and the number of items in it (for the log line).
-type runFunc[In any] func(ctx context.Context, s *imapsafe.Session, in In) (out any, count int, err error)
+type runFunc[In any] func(ctx context.Context, s mailbox, in In) (out any, count int, err error)
 
 // addTool registers a read-only tool. Each call opens an IMAP session,
 // runs fn, closes the session and logs one tool.call line. safeArgs returns

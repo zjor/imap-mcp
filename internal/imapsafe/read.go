@@ -290,6 +290,39 @@ func toCriteria(c SearchCriteria) *imap.SearchCriteria {
 	return crit
 }
 
+// HasAttachments fetches BODYSTRUCTURE only for uids in folder and reports,
+// for each UID that still exists, whether the message has attachments (same
+// rule as Summary.HasAttachments).
+func (s *Session) HasAttachments(ctx context.Context, folder string, uids []uint32) (map[uint32]bool, error) {
+	if err := s.ready(ctx); err != nil {
+		return nil, err
+	}
+	if len(uids) == 0 {
+		return map[uint32]bool{}, nil
+	}
+	if _, err := s.examine(ctx, folder); err != nil {
+		return nil, err
+	}
+	var set imap.UIDSet
+	for _, u := range uids {
+		set.AddNum(imap.UID(u))
+	}
+	start := time.Now()
+	msgs, err := s.c.Fetch(set, &imap.FetchOptions{
+		UID:           true,
+		BodyStructure: &imap.FetchItemBodyStructure{Extended: true},
+	}).Collect()
+	logCmd(logging.From(ctx), "UID FETCH", folder, len(uids), start, err)
+	if err != nil {
+		return nil, fmt.Errorf("imap fetch: %w", err)
+	}
+	out := make(map[uint32]bool, len(msgs))
+	for _, m := range msgs {
+		out[uint32(m.UID)] = m.BodyStructure != nil && hasAttachments(m.BodyStructure)
+	}
+	return out, nil
+}
+
 // FetchSummaries fetches ENVELOPE, FLAGS, INTERNALDATE, BODYSTRUCTURE and
 // BODY.PEEK[TEXT]<0.2048> for uids in folder. The result follows the order
 // of uids; UIDs that no longer exist are left out.

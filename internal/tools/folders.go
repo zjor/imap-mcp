@@ -23,7 +23,7 @@ func registerFolders(s *mcp.Server, deps Deps) {
 	addTool(s, deps, "list_folders",
 		"List the mailbox folders with their special-use role (inbox, sent, drafts, trash, junk, archive) and total and unread message counts. Counts are null when the server does not report them.",
 		func(listFoldersIn) []any { return nil },
-		func(ctx context.Context, s *imapsafe.Session, _ listFoldersIn) (any, int, error) {
+		func(ctx context.Context, s mailbox, _ listFoldersIn) (any, int, error) {
 			folders, err := s.ListFolders(ctx)
 			if err != nil {
 				return nil, 0, err
