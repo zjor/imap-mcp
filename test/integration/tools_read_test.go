@@ -52,8 +52,9 @@ type emailOut struct {
 		MessageID string    `json:"message_id"`
 	} `json:"headers"`
 	UntrustedContent struct {
-		Subject string `json:"subject"`
-		Body    string `json:"body"`
+		Subject    string  `json:"subject"`
+		Body       string  `json:"body"`
+		RawHeaders *string `json:"raw_headers"`
 	} `json:"untrusted_content"`
 	Attachments []struct {
 		ID          string `json:"id"`
@@ -63,7 +64,6 @@ type emailOut struct {
 		Inline      bool   `json:"inline"`
 		DownloadURL string `json:"download_url"`
 	} `json:"attachments"`
-	RawHeaders *string `json:"raw_headers"`
 }
 
 // genMail builds message i of the 45-mail fixture:
@@ -382,8 +382,8 @@ func TestReadEmail_ShapeAndUntrustedField(t *testing.T) {
 	id := s.Messages[0].ID
 
 	var raw map[string]any
-	mustCall(t, cs, "read_email", map[string]any{"id": id}, &raw)
-	for _, k := range []string{"subject", "body"} {
+	mustCall(t, cs, "read_email", map[string]any{"id": id, "format": "raw_headers"}, &raw)
+	for _, k := range []string{"subject", "body", "raw_headers"} {
 		if _, ok := raw[k]; ok {
 			t.Errorf("top-level %q outside untrusted_content", k)
 		}
@@ -393,8 +393,8 @@ func TestReadEmail_ShapeAndUntrustedField(t *testing.T) {
 	if e.ID != id || e.UntrustedContent.Subject != "Report attached" || strings.TrimSpace(e.UntrustedContent.Body) != "Please see the report." {
 		t.Errorf("email = %+v", e)
 	}
-	if e.Headers.MessageID != "att-1@example.com" || len(e.Headers.From) != 1 || e.Headers.From[0].Email != "alice@example.com" || e.RawHeaders != nil {
-		t.Errorf("headers = %+v, raw_headers = %v", e.Headers, e.RawHeaders)
+	if e.Headers.MessageID != "att-1@example.com" || len(e.Headers.From) != 1 || e.Headers.From[0].Email != "alice@example.com" || e.UntrustedContent.RawHeaders != nil {
+		t.Errorf("headers = %+v, raw_headers = %v", e.Headers, e.UntrustedContent.RawHeaders)
 	}
 	if len(e.Attachments) != 1 {
 		t.Fatalf("attachments = %+v", e.Attachments)
@@ -410,8 +410,8 @@ func TestReadEmail_ShapeAndUntrustedField(t *testing.T) {
 
 	var rh emailOut
 	mustCall(t, cs, "read_email", map[string]any{"id": id, "format": "raw_headers"}, &rh)
-	if rh.RawHeaders == nil || !strings.Contains(*rh.RawHeaders, "Message-ID: <att-1@example.com>") || strings.Contains(*rh.RawHeaders, "Please see") {
-		t.Errorf("raw_headers = %v", rh.RawHeaders)
+	if h := rh.UntrustedContent.RawHeaders; h == nil || !strings.Contains(*h, "Message-ID: <att-1@example.com>") || strings.Contains(*h, "Please see") {
+		t.Errorf("raw_headers = %v", h)
 	}
 
 	if flags := rawFlags(t, c, "INBOX", uidOf(t, id)); slices.Contains(flags, imap.FlagSeen) {

@@ -46,11 +46,12 @@ type emailOut struct {
 	UntrustedContent struct {
 		Subject string `json:"subject"`
 		Body    string `json:"body"`
+		// RawHeaders is set for format raw_headers only (spec 8).
+		RawHeaders *string `json:"raw_headers,omitempty"`
 	} `json:"untrusted_content"`
 	// BodyTruncated is true when the body was cut to a size limit.
 	BodyTruncated bool            `json:"body_truncated,omitempty"`
 	Attachments   []attachmentOut `json:"attachments"`
-	RawHeaders    *string         `json:"raw_headers,omitempty"`
 }
 
 func registerRead(s *mcp.Server, deps Deps) {
@@ -121,7 +122,7 @@ func readMessage(ctx context.Context, s mailbox, deps Deps, id ids.MessageID, fo
 	}
 	if format == "raw_headers" {
 		h := hc.headers()
-		e.RawHeaders = &h
+		e.UntrustedContent.RawHeaders = &h
 	}
 	for _, a := range p.Attachments {
 		aid := ids.EncodeAttachment(ids.AttachmentID{MessageID: id, Part: a.Part})
