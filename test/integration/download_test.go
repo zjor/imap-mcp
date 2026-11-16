@@ -6,16 +6,23 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"io"
+	"log/slog"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"runtime"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/emersion/go-imap/v2"
 
+	"github.com/zjor/imap-mcp/internal/config"
 	"github.com/zjor/imap-mcp/internal/ids"
 	"github.com/zjor/imap-mcp/internal/imapsafe"
+	"github.com/zjor/imap-mcp/internal/logging"
+	"github.com/zjor/imap-mcp/internal/server"
 )
 
 // attachMail has a text body (part 1) and one attachment (part 2).
@@ -234,4 +241,124 @@ func TestDownload_DoesNotSetSeen(t *testing.T) {
 	if flags := rawFlags(t, c, "INBOX", uid); slices.Contains(flags, imap.FlagSeen) {
 		t.Fatalf("flags = %v, download set \\Seen", flags)
 	}
+}
+
+// startServerOneSlot is startServer with a limiter of one session per user
+// and the given IMAP address, so a leaked session blocks the next request.
+func startServerOneSlot(t *testing.T, imapAddr string) *mcpServer {
+	t.Helper()
+	cfg := config.Config{
+		Listen: "127.0.0.1:0", IMAPHosts: []string{imapAddr}, AccessTokens: []string{testToken},
+		PublicURL: testPublicURL, MaxSessionsPerUser: 1,
+	}
+	logs := &syncBuffer{}
+	d := testDialer(t)
+	d.Limiter = imapsafe.NewLimiter(1)
+	ts := httptest.NewServer(server.NewWithDialer(cfg, logging.New(logs, slog.LevelDebug, "text"), d))
+	t.Cleanup(func() {
+		ts.Close()
+		if t.Failed() {
+			t.Log(logs.String())
+		}
+	})
+	return &mcpServer{URL: ts.URL, logs: logs}
+}
+
+// cutProxy forwards TCP to imapHost() and closes both sides once limit
+// bytes went from IMAP to the client. It returns the proxy address.
+func cutProxy(t *testing.T, limit int64) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			in, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				out, err := net.Dial("tcp", imapHost())
+				if err != nil {
+					in.Close()
+					return
+				}
+				go func() { io.Copy(out, in); out.Close() }()
+				io.CopyN(in, out, limit)
+				in.Close()
+				out.Close()
+			}()
+		}
+	}()
+	return ln.Addr().String()
+}
+
+func waitLog(t *testing.T, srv *mcpServer, want string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for !strings.Contains(srv.logs.String(), want) {
+		if time.Now().After(deadline) {
+			t.Fatalf("log never had %q:\n%s", want, srv.logs.String())
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// smallDownloadWorks fails unless a small attachment of c downloads
+// within 10 s. With one slot per user it proves the slot was released.
+func smallDownloadWorks(t *testing.T, srv *mcpServer, c imapsafe.Credentials) {
+	t.Helper()
+	uid := seedRaw(t, c, "INBOX", attachMail("application/pdf", "attachment; filename=a.pdf", "SMALL"))[0]
+	req, _ := http.NewRequest("GET", srv.URL+"/attachments/"+attachmentID(t, c, uid), nil)
+	req.Header = authHeaders(c)
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatalf("follow-up download: %v", err)
+	}
+	defer resp.Body.Close()
+	if b, _ := io.ReadAll(resp.Body); resp.StatusCode != 200 || string(b) != "SMALL" {
+		t.Fatalf("follow-up: status %d body %q", resp.StatusCode, b)
+	}
+}
+
+func TestDownload_IMAPCutMidStream_ClientSeesBrokenTransfer(t *testing.T) {
+	c := freshUser(t)
+	raw, _ := bigAttachmentMail(20 << 20)
+	uid := seedRaw(t, c, "INBOX", raw)[0]
+	raw = nil
+	id := attachmentID(t, c, uid)
+	srv := startServerOneSlot(t, cutProxy(t, 4<<20))
+
+	resp := srv.download(t, "GET", id, authHeaders(c))
+	n, err := io.Copy(io.Discard, resp.Body)
+	if err == nil {
+		t.Fatalf("clean end after %d bytes; want a broken transfer", n)
+	}
+	t.Logf("client read %d bytes, error: %v", n, err)
+	waitLog(t, srv, "attachment.aborted")
+	waitLog(t, srv, "aborted=true")
+	if strings.Contains(srv.logs.String(), "attachment.downloaded") {
+		t.Error("aborted download logged as downloaded")
+	}
+	smallDownloadWorks(t, srv, c)
+}
+
+func TestDownload_ClientDisconnect_ReleasesSlot(t *testing.T) {
+	c := freshUser(t)
+	raw, _ := bigAttachmentMail(20 << 20)
+	uid := seedRaw(t, c, "INBOX", raw)[0]
+	raw = nil
+	id := attachmentID(t, c, uid)
+	srv := startServerOneSlot(t, imapHost())
+
+	resp := srv.download(t, "GET", id, authHeaders(c))
+	if _, err := io.ReadFull(resp.Body, make([]byte, 64<<10)); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close() // closes the connection mid-stream
+	waitLog(t, srv, "attachment.aborted")
+	waitLog(t, srv, "http.request")
+	smallDownloadWorks(t, srv, c)
 }

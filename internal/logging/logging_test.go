@@ -155,3 +155,27 @@ func TestTokenID(t *testing.T) {
 		t.Fatalf("got %q want %q", got, want)
 	}
 }
+
+func TestRequestMiddleware_LogsAbortedRequestAndRepanics(t *testing.T) {
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("partial"))
+		panic(http.ErrAbortHandler)
+	})
+	var buf bytes.Buffer
+	base := New(&buf, slog.LevelInfo, "text")
+	rec := httptest.NewRecorder()
+	var got any
+	func() {
+		defer func() { got = recover() }()
+		RequestMiddleware(base)(h).ServeHTTP(rec, httptest.NewRequest("GET", "/x", nil))
+	}()
+	if got != http.ErrAbortHandler {
+		t.Fatalf("panic = %v, want http.ErrAbortHandler", got)
+	}
+	out := buf.String()
+	for _, want := range []string{"msg=http.request", "aborted=true", "bytes_out=7"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in %s", want, out)
+		}
+	}
+}

@@ -132,20 +132,31 @@ func RequestMiddleware(base *slog.Logger) func(http.Handler) http.Handler {
 			r.Body = body
 			sw := &statusWriter{ResponseWriter: w}
 
+			// Log in a defer so an aborted request (panic with
+			// http.ErrAbortHandler) is logged too. The panic goes on.
+			defer func() {
+				rec := recover()
+				status := sw.status
+				if status == 0 {
+					status = http.StatusOK
+				}
+				attrs := []any{
+					"method", r.Method,
+					"path", r.URL.Path,
+					"status", status,
+					"duration_ms", time.Since(start).Milliseconds(),
+					"bytes_in", body.n,
+					"bytes_out", sw.n,
+				}
+				if rec != nil {
+					attrs = append(attrs, "aborted", true)
+				}
+				l.Info("http.request", attrs...)
+				if rec != nil {
+					panic(rec)
+				}
+			}()
 			next.ServeHTTP(sw, r)
-
-			status := sw.status
-			if status == 0 {
-				status = http.StatusOK
-			}
-			l.Info("http.request",
-				"method", r.Method,
-				"path", r.URL.Path,
-				"status", status,
-				"duration_ms", time.Since(start).Milliseconds(),
-				"bytes_in", body.n,
-				"bytes_out", sw.n,
-			)
 		})
 	}
 }

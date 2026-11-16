@@ -540,12 +540,12 @@ func decodeParam(params map[string]string, key string) string {
 	for k, v := range params {
 		switch {
 		case k == key:
-			fmt.Fprintf(&b, "; %s=%q", k, v)
+			fmt.Fprintf(&b, "; %s=%s", k, quoteParam(v))
 		case strings.HasPrefix(k, key+"*"):
 			if strings.HasSuffix(k, "*") {
 				fmt.Fprintf(&b, "; %s=%s", k, v) // percent-encoded, token-safe
 			} else {
-				fmt.Fprintf(&b, "; %s=%q", k, v)
+				fmt.Fprintf(&b, "; %s=%s", k, quoteParam(v))
 			}
 		}
 	}
@@ -558,6 +558,25 @@ func decodeParam(params map[string]string, key string) string {
 		name = dec
 	}
 	return name
+}
+
+// quoteParam makes a quoted-string for mime.ParseMediaType. Only " and \
+// need an escape; %q would add Go escapes the parser reads as quoted-pairs.
+// CR and LF are dropped because the parser rejects them.
+func quoteParam(v string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for i := 0; i < len(v); i++ {
+		if v[i] == '\r' || v[i] == '\n' {
+			continue
+		}
+		if v[i] == '"' || v[i] == '\\' {
+			b.WriteByte('\\')
+		}
+		b.WriteByte(v[i])
+	}
+	b.WriteByte('"')
+	return b.String()
 }
 
 // partStructure returns the single part id.Part from BODYSTRUCTURE, or

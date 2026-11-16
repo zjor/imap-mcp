@@ -289,6 +289,9 @@ func TestDecodeParam(t *testing.T) {
 		{"rfc2231", map[string]string{"filename*": "UTF-8''Faktura%20%C4%8D.pdf"}, "Faktura č.pdf"},
 		{"continuation", map[string]string{"filename*0*": "UTF-8''Fak", "filename*1": "tura.pdf"}, "Faktura.pdf"},
 		{"rfc2047", map[string]string{"filename": "=?UTF-8?Q?Faktura_=C4=8D.pdf?="}, "Faktura č.pdf"},
+		{"non-ascii plain", map[string]string{"filename": "Faktura č\u200b.pdf"}, "Faktura č\u200b.pdf"},
+		{"quote and backslash", map[string]string{"filename": `a"b\c.txt`}, `a"b\c.txt`},
+		{"control chars", map[string]string{"filename": "a\x00b\r\nc.txt"}, "a\x00bc.txt"},
 		{"absent", map[string]string{"other": "x"}, ""},
 	}
 	for _, tt := range tests {
