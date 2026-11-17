@@ -19,7 +19,7 @@ archives:
   - id: default
     formats: [tar.gz]
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
-    files: [LICENSE, README.md, .env.example, scripts/*, examples/*]
+    files: [LICENSE, README.md, .env.example, scripts/*, docs/agent-setup.md]
 
 checksum:
   name_template: checksums.txt

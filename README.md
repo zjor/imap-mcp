@@ -34,7 +34,7 @@ Agents can list folders, search, read messages and threads, look up contacts, do
 
 Read this before you give an agent access to a real mailbox.
 
-1. **The agent can read its own credentials.** For the file endpoints, the password sits in a file or in env variables on the agent's machine. An agent can run `env` or `cat .env.local`. A prompt-injected agent could then leak the password. The scripts and the Claude Code deny rules below reduce this risk, but do not remove it. Any agent with a shell on the same machine as a secret can reach that secret. Use an app password when your provider offers one.
+1. **The agent can read its own credentials.** For the file endpoints, the password sits in a file or in env variables on the agent's machine. An agent can run `env` or `cat .env.local`. A prompt-injected agent could then leak the password. The scripts and the Claude Code deny rules in [docs/agent-setup.md](docs/agent-setup.md) reduce this risk, but do not remove it. Any agent with a shell on the same machine as a secret can reach that secret. Use an app password when your provider offers one.
 2. **The server sees every user's password in transit.** It stores none, but a compromised server could collect them. Always put TLS in front of the server. The reverse proxy must not log request headers. The server itself never logs headers, and a test checks this.
 3. **Files the agent attaches go to the mail server.** A prompt-injected agent could attach a sensitive local file to a draft. Nothing is sent without a human, but the file now sits in the Drafts folder on every synced device. Check the attachments of every draft before you send it. The upload response lists all attachments, so the agent can report them.
 4. **Downloaded attachments are untrusted.** They can carry malware or prompt-injection text, for example inside a PDF. Save them to a separate folder and treat their content as data. The server always serves files as `application/octet-stream` with `X-Content-Type-Options: nosniff` and `Content-Security-Policy: sandbox`, so a browser never runs them as HTML on the server's domain.
@@ -52,20 +52,25 @@ Logs never contain the IMAP password, the access token, the `Authorization` or `
 - **Docker:** `docker pull ghcr.io/zjor/imap-mcp:latest`
 - **From source:** `go install github.com/zjor/imap-mcp/cmd/imap-mcp@latest` (Go 1.25 or newer).
 
-The release archives also contain `scripts/`, `examples/` and `.env.example`.
+The release archives also contain `scripts/`, `docs/agent-setup.md` and `.env.example`.
 
-## How clients authenticate
+## Connect an agent
 
-Every request to the server carries these headers:
+Every request carries an access token and the user's IMAP login in HTTP headers. The client adds them, so the model never sees them. For Claude Code, a `headersHelper` script reads them from `.env.local`.
 
-| Header | Required | Meaning |
-|---|---|---|
-| `Authorization: Bearer <token>` | yes | one of the tokens in `IMAP_MCP_ACCESS_TOKENS`. A missing or wrong token returns 401 before any IMAP connection. |
-| `X-IMAP-Username` | yes | IMAP login |
-| `X-IMAP-Password` | yes | IMAP password or app password |
-| `X-IMAP-Host` | only when the server allows more than one host | must match an allowed `host:port`, otherwise 403 |
+[docs/agent-setup.md](docs/agent-setup.md) has the full client setup: scripts, `.env.local`, `.mcp.json`, deny rules, checks and attachment transfer. An agent can follow it step by step. The short version for Claude Code is this `.mcp.json`:
 
-The model must never see these values. The client adds them. For Claude Code, `headersHelper` runs `scripts/imap-mcp-headers.sh`, which reads `.env.local` and prints the headers as JSON. For other MCP clients, use their own way to set static HTTP headers.
+```json
+{
+  "mcpServers": {
+    "mail": {
+      "type": "http",
+      "url": "https://mail-mcp.example.com/mcp",
+      "headersHelper": "./scripts/imap-mcp-headers.sh"
+    }
+  }
+}
+```
 
 ## Local setup
 
@@ -95,78 +100,23 @@ The server runs on your machine, on `127.0.0.1`. Plain HTTP is allowed on loopba
      ghcr.io/zjor/imap-mcp:latest
    ```
 
-3. Add the server to your project. For Claude Code, copy [`examples/mcp.json`](examples/mcp.json) to `.mcp.json` in the project root and copy the `scripts/` folder next to it:
+3. Check it: `curl http://127.0.0.1:8787/healthz` prints `ok`.
 
-   ```json
-   {
-     "mcpServers": {
-       "mail": {
-         "type": "http",
-         "url": "http://127.0.0.1:8787/mcp",
-         "headersHelper": "./scripts/imap-mcp-headers.sh"
-       }
-     }
-   }
-   ```
+4. Connect the agent with [docs/agent-setup.md](docs/agent-setup.md). Use `http://127.0.0.1:8787/mcp` as the URL.
 
-   `imap-mcp-headers.sh` needs `jq`. It reads `.env.local` from the current directory; set `IMAP_MCP_ENV_FILE` to use another path.
+## Production setup
 
-4. Stop the agent from reading the secrets directly. In `.claude/settings.json`:
+Clients always talk to imap-mcp over HTTPS. Run the Docker image behind a TLS reverse proxy or a Kubernetes ingress. Set these variables:
 
-   ```json
-   {
-     "permissions": {
-       "deny": ["Read(.env.local)", "Bash(env)"]
-     }
-   }
-   ```
+- `IMAP_MCP_INSECURE_HTTP=true`, because the server listens on `0.0.0.0` inside the container. Only the proxy may reach the port.
+- `IMAP_MCP_IMAP_HOSTS`, `IMAP_MCP_ACCESS_TOKENS` (one token per person), and `IMAP_MCP_PUBLIC_URL=https://<your-domain>`.
 
-   These rules make a leak harder, not impossible (see the threat model). Consider also denying `Bash(printenv:*)` and `Bash(cat .env.local)`.
+The proxy must meet these rules:
 
-5. Check it: `curl http://127.0.0.1:8787/healthz` prints `ok`.
-
-## VPS setup
-
-On a server, clients always talk to imap-mcp over HTTPS. The recommended setup is a TLS reverse proxy on the same host. [`examples/Caddyfile`](examples/Caddyfile) is a complete Caddy example with automatic certificates.
-
-1. Run imap-mcp on loopback:
-
-   ```sh
-   docker run -d --name imap-mcp --restart unless-stopped \
-     -p 127.0.0.1:8787:8787 \
-     -e IMAP_MCP_INSECURE_HTTP=true \
-     -e IMAP_MCP_IMAP_HOSTS=imap.example.com:993 \
-     -e IMAP_MCP_ACCESS_TOKENS=token-for-alice,token-for-bob \
-     -e IMAP_MCP_PUBLIC_URL=https://mail-mcp.example.com \
-     ghcr.io/zjor/imap-mcp:latest
-   ```
-
-   `IMAP_MCP_INSECURE_HTTP=true` is needed because the server listens on `0.0.0.0` inside the container. Only the proxy can reach it, because the port is published on `127.0.0.1`.
-
-2. Put Caddy in front, with the example `Caddyfile` and your domain:
-
-   ```
-   {
-   	log default {
-   		format filter {
-   			request>headers delete
-   		}
-   	}
-   }
-
-   mail-mcp.example.com {
-   	request_body {
-   		max_size 30MB
-   	}
-   	reverse_proxy 127.0.0.1:8787 {
-   		flush_interval -1
-   	}
-   }
-   ```
-
-   **The proxy must not log request headers.** They carry the IMAP password. Caddy hides only a few standard headers, such as `Authorization` and `Cookie`. It writes all other headers, including `X-IMAP-Password`, into its logs. This happens even without an access log: the default logger writes the full request in error entries, for example when imap-mcp is down. The global `log default` block in the example removes the request headers from every entry of the default logger. The example has no access log. If you add one, give it the same filter, as shown in the example file. The same rule applies to nginx or any other proxy.
-
-3. Each user points their client at `https://mail-mcp.example.com/mcp`, with their own token and their own IMAP login in `.env.local`.
+- **Never log request headers.** They carry the IMAP password in `X-IMAP-Password`. Many proxies hide only standard headers such as `Authorization` and `Cookie`. Some also write the full request into error logs, for example when imap-mcp is down. Check both the access log and the error log of your proxy or ingress controller.
+- **Do not buffer responses.** Downloads stream.
+- **Allow large request bodies.** The body limit must be at or above `IMAP_MCP_MAX_UPLOAD` plus multipart overhead, for example 30 MB for the default 25 MB.
+- **Allow long requests.** There is no overall time limit for a download or an upload. Set the proxy read and send timeouts high enough for large files.
 
 **Built-in TLS** is the other option: set `IMAP_MCP_TLS_CERT` and `IMAP_MCP_TLS_KEY` to PEM files. The server refuses to start when it would serve plain HTTP on a non-loopback address without `IMAP_MCP_INSECURE_HTTP=true`. The connection from the server to IMAP is always TLS.
 
@@ -191,15 +141,7 @@ The server reads environment variables only. For local development it also reads
 
 At start the server logs one `server.start` line. It has the effective config and an `env` block. The `env` block lists every `IMAP_MCP_*` variable with its source: `env`, `.env.local` or `default`. Access tokens and unknown `IMAP_MCP_*` keys show as `[redacted]`. An invalid config logs one JSON `config.invalid` line with the same `env` block, then the server exits with code 1.
 
-Client-side variables, read by `scripts/imap-mcp-headers.sh` and `scripts/imap-mcp-curl` (from the environment or `.env.local`):
-
-| Variable | Meaning |
-|---|---|
-| `IMAP_MCP_TOKEN` | your access token |
-| `IMAP_USER` | IMAP login |
-| `IMAP_PASSWORD` | IMAP password or app password |
-| `IMAP_HOST` | optional; only when the server allows more than one host |
-| `IMAP_MCP_ENV_FILE` | optional; path of the env file, default `./.env.local` |
+Client-side variables (`IMAP_MCP_TOKEN`, `IMAP_USER`, `IMAP_PASSWORD`, `IMAP_HOST`, `IMAP_MCP_ENV_FILE`) are described in [docs/agent-setup.md](docs/agent-setup.md).
 
 Endpoints: `/mcp` (MCP Streamable HTTP, stateless), `/attachments/{id}`, `/drafts/{draft_id}/attachments`, and `/healthz` (no auth). Every response has an `X-Request-Id` header. Errors from tools and from the HTTP endpoints, including auth rejections (401 `auth_failed`, 403 `host_not_allowed`), use one JSON shape: `{"error":{"code","message","request_id"}}`.
 
@@ -225,34 +167,10 @@ Drafts created by the server carry the header `X-IMAP-MCP-Draft-Id`. Only those 
 
 File bytes never pass through the model context. They move through two HTTP endpoints, with the same headers as `/mcp`. The URLs carry no secret; a URL alone gives no access.
 
-The agent uses `scripts/imap-mcp-curl`. It loads the values from the environment or `.env.local`, adds the headers, and runs `curl --fail-with-body -sS`. The agent writes only the URL, so the password never appears in the transcript. The script passes the headers to curl on stdin, so they do not show in the process list.
+- **Download:** `read_email` returns a `download_url` for each attachment. The file is always served as `application/octet-stream`. The type from the email is in the `X-Original-Content-Type` header.
+- **Upload:** `create_draft` and `update_draft` return an `upload_url`. Each request rewrites the whole draft, so send all files in one request. The response lists every attachment of the draft. A request above `IMAP_MCP_MAX_UPLOAD` returns 413.
 
-Do not pass `-f`, `--fail`, `-s` or `-S` to the script. It already sets `--fail-with-body -sS`. curl does not allow `--fail` together with `--fail-with-body` and exits with `option -f: is badly used here`. With `--fail-with-body` the script exits non-zero on an HTTP error, and the JSON error body goes to the output file.
-
-**Download.** `read_email` returns a `download_url` for each attachment:
-
-```sh
-mkdir -p ./inbox-files
-scripts/imap-mcp-curl -o ./inbox-files/invoice.pdf "https://mail-mcp.example.com/attachments/<attachment_id>"
-```
-
-The file is always served as `application/octet-stream`. The type from the email is in the `X-Original-Content-Type` header.
-
-**Upload.** `create_draft` and `update_draft` return an `upload_url`. Send all files in one request, because each request rewrites the whole draft:
-
-```sh
-scripts/imap-mcp-curl -F file=@offer.pdf -F file=@price-list.xlsx "https://mail-mcp.example.com/drafts/<draft_id>/attachments"
-```
-
-The response lists every attachment of the draft. A request above `IMAP_MCP_MAX_UPLOAD` returns 413.
-
-Without the script, the agent can use plain curl with variable names that the shell fills in:
-
-```sh
-curl --fail-with-body -sS -H "Authorization: Bearer $IMAP_MCP_TOKEN" \
-  -H "X-IMAP-Username: $IMAP_USER" -H "X-IMAP-Password: $IMAP_PASSWORD" \
-  -o ./inbox-files/invoice.pdf "$URL"
-```
+The agent uses `scripts/imap-mcp-curl`, which adds the headers. See [docs/agent-setup.md](docs/agent-setup.md#6-download-and-upload-attachments) for usage.
 
 ## Known limits
 

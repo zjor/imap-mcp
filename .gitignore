@@ -4,3 +4,4 @@ dist/
 test/integration/certs/
 .idea/
 bin/
+.mcp.json
