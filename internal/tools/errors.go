@@ -57,6 +57,8 @@ func classify(err error) (code, message string) {
 		return codeNotFound, "message or part not found"
 	case errors.As(err, &ie) && ie.Code == imap.ResponseCodeNonExistent:
 		return codeNotFound, "folder not found"
+	case errors.Is(err, imapsafe.ErrNoDrafts):
+		return codeUnsupported, "the server has no Drafts folder; set IMAP_MCP_DRAFTS_FOLDER"
 	case errors.Is(err, imapsafe.ErrUnsupported):
 		return codeUnsupported, "not supported on this server"
 	case errors.Is(err, mailparse.ErrUnparseable):

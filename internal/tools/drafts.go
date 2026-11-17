@@ -2,7 +2,6 @@ package tools
 
 import (
 	"context"
-	"errors"
 	"net/mail"
 	"slices"
 	"time"
@@ -255,7 +254,7 @@ func deleteDraft(ctx context.Context, s *imapsafe.Session, in deleteDraftIn) (an
 func listDrafts(ctx context.Context, s *imapsafe.Session, in listDraftsIn) (any, int, error) {
 	folder := s.Folders().Drafts
 	if folder == "" {
-		return nil, 0, errors.New("the server has no Drafts folder")
+		return nil, 0, imapsafe.ErrNoDrafts
 	}
 	limit := clampLimit(in.Limit)
 	var cur *cursorFolder
