@@ -81,7 +81,17 @@ jobs:
         run: |
           install -m 600 /dev/null "$RUNNER_TEMP/kubeconfig"
           printf '%s' "$KUBECONFIG_B64" | base64 -d > "$RUNNER_TEMP/kubeconfig"
+          # GitHub masks only the base64 form; mask the decoded token too.
+          token=$(sed -n 's/^ *token: *//p; s/.*{token: *\([^}]*\)}.*/\1/p' "$RUNNER_TEMP/kubeconfig" | head -1)
+          [ -n "$token" ] && echo "::add-mask::$token"
           echo "KUBECONFIG=$RUNNER_TEMP/kubeconfig" >> "$GITHUB_ENV"
+
+      # Fails fast on an unknown version or a private GHCR package, instead of
+      # a 5-minute ImagePullBackOff and rollback.
+      - name: Check image is pullable
+        env:
+          TAG: ${{ steps.check.outputs.tag }}
+        run: docker manifest inspect "ghcr.io/zjor/imap-mcp:$TAG" > /dev/null
 
       - name: Apply secret
         run: |
@@ -113,11 +123,11 @@ jobs:
             -o jsonpath='{.spec.template.spec.containers[0].image}')
           echo "running: $image"
           test "$image" = "ghcr.io/zjor/imap-mcp:$TAG"
-          # The certificate may need time on the first deploy.
-          for i in $(seq 1 12); do
+          # The certificate may need a few minutes on the first deploy.
+          for i in $(seq 1 30); do
             body=$(curl -fsS "https://$INGRESS_HOST/healthz" || true)
             echo "attempt $i: $body"
             [ "$body" = "ok" ] && exit 0
-            sleep 5
+            sleep 10
           done
           echo "healthz never returned ok"; exit 1

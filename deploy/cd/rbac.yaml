@@ -5,6 +5,8 @@
 # Namespace-scoped: it can roll out the Helm release in imap-mcp and nothing
 # else. Helm needs secrets (release storage and imap-mcp-secrets), the chart's
 # resources (Deployment, Service, Ingress) and pods/events for --atomic.
+# Secret access lets a token holder mint new tokens for this ServiceAccount, so
+# on a leak delete and recreate the ServiceAccount (see deploy/README.md).
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -27,7 +29,7 @@ metadata:
   namespace: imap-mcp
 rules:
   - apiGroups: [""]
-    resources: [secrets, configmaps, services, serviceaccounts, pods, pods/log, events]
+    resources: [secrets, services, pods, pods/log, events]
     verbs: ["*"]
   - apiGroups: [apps]
     resources: [deployments, replicasets]

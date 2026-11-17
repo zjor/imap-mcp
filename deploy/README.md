@@ -56,6 +56,13 @@ Names: release `imap-mcp`, namespace `imap-mcp`, Secret `imap-mcp-secrets`. The 
 
    Rebuild it when the token is rotated or the API endpoint changes.
 
+   **If this kubeconfig leaks**, recreating only `github-deployer-token` is not enough. The deployer may create Secrets, so a token holder can mint another token for the ServiceAccount. Delete and recreate the ServiceAccount, which revokes all its tokens, then repeat this step:
+
+   ```sh
+   kubectl --context midgard -n imap-mcp delete -f deploy/cd/rbac.yaml
+   kubectl --context midgard apply -f deploy/cd/rbac.yaml
+   ```
+
 3. Set the other secrets in the GitHub environment `production`:
 
    | Secret | Value |
@@ -91,13 +98,15 @@ The `deploy` job:
 4. restarts the pods, so a changed token list takes effect;
 5. checks the running image and `https://<host>/healthz`.
 
-**Rollback or redeploy** of a released version:
+**Rollback or redeploy** of a released version. Run the workflow from the tag, so the chart matches the image:
 
 ```sh
-gh workflow run ci.yml -f version=0.1.0
+gh workflow run ci.yml --ref v0.1.0 -f version=0.1.0
 ```
 
 **Change tokens:** update `IMAP_MCP_ACCESS_TOKENS` in GitHub, then redeploy the current version with the command above.
+
+**First release:** the `deploy` job checks that the image can be pulled without login. A new GHCR package can be private even for a public repo, so the first deploy may fail at "Check image is pullable". Make the package public (see below), then redeploy with the command above.
 
 ## Manual fallback
 
@@ -111,7 +120,7 @@ deploy/scripts/deploy-with-helm.sh 0.1.0
 
 ## Checks after the first deploy
 
-1. **The image is public.** A new GHCR package can be private even for a public repo. Log out and pull:
+1. **The image is public.** Log out and pull:
 
    ```sh
    docker logout ghcr.io && docker pull ghcr.io/zjor/imap-mcp:0.1.0
