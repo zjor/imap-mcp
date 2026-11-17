@@ -15,6 +15,8 @@ import (
 	_ "github.com/emersion/go-message/charset" // decode non-UTF-8 charsets
 	gomail "github.com/emersion/go-message/mail"
 	"github.com/k3a/html2text"
+
+	"github.com/zjor/imap-mcp/internal/ids"
 )
 
 // maxBodyBytes limits the text and the HTML body each kept in memory.
@@ -51,6 +53,10 @@ type Parsed struct {
 	Attachments []Attachment
 	// Truncated is true when the text or HTML body was cut at maxBodyBytes.
 	Truncated bool
+	// AttachmentsTruncated is true when parts were left out of Attachments:
+	// past MaxAttachments, past ids.MaxPartNumber in one multipart, or
+	// nested deeper than ids.MaxPartDepth.
+	AttachmentsTruncated bool
 }
 
 // ErrUnparseable means the message cannot be parsed. Its text is fixed and
@@ -83,7 +89,7 @@ func Parse(r io.Reader) (res Parsed, err error) {
 	var haveText, haveHTML bool
 	w := walker{p: &p, text: &text, html: &html, haveText: &haveText, haveHTML: &haveHTML}
 	if e.MultipartReader() != nil {
-		w.walkMultipart(e, nil, 0)
+		w.walkMultipart(e, nil)
 	} else {
 		w.leaf(e, []int{1})
 	}
@@ -97,9 +103,8 @@ func Parse(r io.Reader) (res Parsed, err error) {
 	return p, nil
 }
 
-// maxDepth is the deepest multipart nesting that is walked. Deeper parts are
-// listed as plain attachments and not entered.
-const maxDepth = 20
+// MaxAttachments is the most attachments Parse lists for one message.
+const MaxAttachments = 1000
 
 type walker struct {
 	p                  *Parsed
@@ -107,7 +112,10 @@ type walker struct {
 	haveText, haveHTML *bool
 }
 
-func (w *walker) walkMultipart(e *message.Entity, path []int, depth int) {
+// walkMultipart walks the children of e. A multipart child at the depth
+// limit is listed as one attachment and not entered, so every part path
+// fits an attachment id (ids.MaxPartDepth, ids.MaxPartNumber).
+func (w *walker) walkMultipart(e *message.Entity, path []int) {
 	mr := e.MultipartReader()
 	if mr == nil {
 		return
@@ -117,9 +125,13 @@ func (w *walker) walkMultipart(e *message.Entity, path []int, depth int) {
 		if child == nil || (err != nil && !message.IsUnknownCharset(err) && !message.IsUnknownEncoding(err)) {
 			return // io.EOF or malformed: keep what we have
 		}
+		if i > ids.MaxPartNumber {
+			w.p.AttachmentsTruncated = true
+			return
+		}
 		childPath := append(append([]int{}, path...), i)
-		if depth < maxDepth && child.MultipartReader() != nil {
-			w.walkMultipart(child, childPath, depth+1)
+		if len(childPath) < ids.MaxPartDepth && child.MultipartReader() != nil {
+			w.walkMultipart(child, childPath)
 		} else {
 			w.leaf(child, childPath)
 		}
@@ -152,6 +164,10 @@ func (w *walker) leaf(e *message.Entity, path []int) {
 			*w.html = w.readBody(e)
 			return
 		}
+	}
+	if len(w.p.Attachments) >= MaxAttachments {
+		w.p.AttachmentsTruncated = true
+		return
 	}
 	n, _ := io.Copy(io.Discard, e.Body)
 	w.p.Attachments = append(w.p.Attachments, Attachment{

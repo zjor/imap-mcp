@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"github.com/zjor/imap-mcp/internal/ids"
 )
 
 func parseFixture(t *testing.T, name string) Parsed {
@@ -232,8 +234,65 @@ func TestParse_DeepNestingIsBounded(t *testing.T) {
 	if grew := after.TotalAlloc - before.TotalAlloc; grew > 64<<20 {
 		t.Errorf("allocated %d bytes", grew)
 	}
-	if len(p.Attachments) != 1 || len(p.Attachments[0].Part) != maxDepth+1 {
+	if len(p.Attachments) != 1 || len(p.Attachments[0].Part) != ids.MaxPartDepth {
 		t.Errorf("attachments = %+v", p.Attachments)
+	}
+	checkPartLimits(t, p)
+}
+
+// checkPartLimits fails when an attachment has no valid attachment id.
+func checkPartLimits(t *testing.T, p Parsed) {
+	t.Helper()
+	if len(p.Attachments) > MaxAttachments {
+		t.Errorf("%d attachments", len(p.Attachments))
+	}
+	for _, a := range p.Attachments {
+		id := ids.EncodeAttachment(ids.AttachmentID{MessageID: ids.MessageID{Folder: "INBOX", UIDValidity: 1, UID: 1}, Part: a.Part})
+		if _, err := ids.DecodeAttachment(id); err != nil {
+			t.Fatalf("part %v has no valid id: %v", a.Part, err)
+		}
+	}
+}
+
+// manyParts is a message with groups multiparts of n attachments each.
+func manyParts(groups, n int) string {
+	var b strings.Builder
+	b.WriteString("From: a@example.com\nContent-Type: multipart/mixed; boundary=top\n\n")
+	for g := 0; g < groups; g++ {
+		b.WriteString("--top\nContent-Type: multipart/mixed; boundary=g" + strconv.Itoa(g) + "\n\n")
+		for i := 0; i < n; i++ {
+			b.WriteString("--g" + strconv.Itoa(g) + "\nContent-Type: application/octet-stream\n\nx\n")
+		}
+		b.WriteString("--g" + strconv.Itoa(g) + "--\n")
+	}
+	b.WriteString("--top--\n")
+	return b.String()
+}
+
+func TestParse_PartNumberLimit(t *testing.T) {
+	p, err := Parse(strings.NewReader(manyParts(1, ids.MaxPartNumber+5)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Attachments) != ids.MaxPartNumber || !p.AttachmentsTruncated {
+		t.Errorf("%d attachments, truncated %v", len(p.Attachments), p.AttachmentsTruncated)
+	}
+	checkPartLimits(t, p)
+}
+
+func TestParse_AttachmentCap(t *testing.T) {
+	p, err := Parse(strings.NewReader(manyParts(3, 400)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Attachments) != MaxAttachments || !p.AttachmentsTruncated {
+		t.Errorf("%d attachments, truncated %v", len(p.Attachments), p.AttachmentsTruncated)
+	}
+	checkPartLimits(t, p)
+
+	p, _ = Parse(strings.NewReader(manyParts(2, 3)))
+	if len(p.Attachments) != 6 || p.AttachmentsTruncated {
+		t.Errorf("%d attachments, truncated %v", len(p.Attachments), p.AttachmentsTruncated)
 	}
 }
 
@@ -254,6 +313,7 @@ func FuzzParse(f *testing.F) {
 		if err != nil && !errors.Is(err, ErrUnparseable) {
 			t.Fatalf("err = %v, want ErrUnparseable", err)
 		}
+		checkPartLimits(t, p)
 	})
 }
 

@@ -40,9 +40,16 @@ const (
 	kindAttachment = 'a'
 
 	maxFolder  = 512
-	maxDepth   = 20
-	maxPartNum = 1000
+	maxDepth   = MaxPartDepth
+	maxPartNum = MaxPartNumber
 	maxRaw     = 2 + 2 + maxFolder + 8 + 1 + 2*maxDepth
+)
+
+// Part path limits of an attachment id. mailparse lists only parts inside
+// them, so every listed attachment has a valid id.
+const (
+	MaxPartDepth  = 20
+	MaxPartNumber = 1000
 )
 
 var enc = base64.RawURLEncoding.Strict()

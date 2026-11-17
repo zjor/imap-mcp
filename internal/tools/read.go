@@ -52,6 +52,9 @@ type emailOut struct {
 	// BodyTruncated is true when the body was cut to a size limit.
 	BodyTruncated bool            `json:"body_truncated,omitempty"`
 	Attachments   []attachmentOut `json:"attachments"`
+	// AttachmentsTruncated is true when the message has more parts than
+	// the list shows (mailparse.MaxAttachments and the part id limits).
+	AttachmentsTruncated bool `json:"attachments_truncated,omitempty"`
 }
 
 func registerRead(s *mcp.Server, deps Deps) {
@@ -117,6 +120,7 @@ func readMessage(ctx context.Context, s mailbox, deps Deps, id ids.MessageID, fo
 	e.UntrustedContent.Subject = p.Headers.Subject
 	e.UntrustedContent.Body = p.Text
 	e.BodyTruncated = p.Truncated
+	e.AttachmentsTruncated = p.AttachmentsTruncated
 	if format == "html" && p.HTML != "" {
 		e.UntrustedContent.Body = p.HTML
 	}

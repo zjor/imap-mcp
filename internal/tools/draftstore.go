@@ -97,6 +97,10 @@ func rebuildDraft(ctx context.Context, s *imapsafe.Session, draftID string, edit
 	if err != nil {
 		return rebuilt{}, err
 	}
+	if old.AttachmentsTruncated {
+		// A rebuild would drop the parts the list leaves out.
+		return rebuilt{}, badArg("the draft has more attachments than the server can keep")
+	}
 	input := draftInput(old, draftID)
 	keep, err := edit(old, &input)
 	if err != nil {

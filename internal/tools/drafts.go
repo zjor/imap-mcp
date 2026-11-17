@@ -172,6 +172,9 @@ func createDraft(ctx context.Context, s *imapsafe.Session, deps Deps, in createD
 			if in.Subject == "" {
 				input.Subject = drafts.ForwardSubject(orig.Headers.Subject)
 			}
+			if orig.AttachmentsTruncated && in.ForwardAttachments == nil {
+				return nil, 0, badArg("the original has more attachments than the server lists; pass forward_attachments")
+			}
 			atts, err := forwardSelection(mid, orig.Attachments, in.ForwardAttachments)
 			if err != nil {
 				return nil, 0, err
