@@ -227,6 +227,8 @@ File bytes never pass through the model context. They move through two HTTP endp
 
 The agent uses `scripts/imap-mcp-curl`. It loads the values from the environment or `.env.local`, adds the headers, and runs `curl --fail-with-body -sS`. The agent writes only the URL, so the password never appears in the transcript. The script passes the headers to curl on stdin, so they do not show in the process list.
 
+Do not pass `-f`, `--fail`, `-s` or `-S` to the script. It already sets `--fail-with-body -sS`. curl does not allow `--fail` together with `--fail-with-body` and exits with `option -f: is badly used here`. With `--fail-with-body` the script exits non-zero on an HTTP error, and the JSON error body goes to the output file.
+
 **Download.** `read_email` returns a `download_url` for each attachment:
 
 ```sh

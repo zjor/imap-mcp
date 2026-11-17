@@ -5,6 +5,9 @@
 #   imap-mcp-curl -o ./inbox-files/invoice.pdf "$DOWNLOAD_URL"
 #   imap-mcp-curl -F file=@offer.pdf "$UPLOAD_URL"
 #
+# The script already passes --fail-with-body -sS. Do not add -f/--fail:
+# curl rejects it together with --fail-with-body ("option -f: is badly used here").
+#
 # Values come from the environment or an env file, by default ./.env.local
 # (override with IMAP_MCP_ENV_FILE). They are passed to curl through a config on stdin,
 # so they never show in the process list or in the output.
