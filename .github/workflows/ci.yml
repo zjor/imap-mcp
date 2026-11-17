@@ -100,12 +100,21 @@ jobs:
             --from-literal=IMAP_MCP_ACCESS_TOKENS="$IMAP_MCP_ACCESS_TOKENS" \
             --dry-run=client -o yaml | kubectl apply -f -
 
+      # Folder names are optional environment variables (not secrets), for
+      # IMAP servers without SPECIAL-USE. Unset means auto-detect.
       - name: Helm upgrade
         env:
           TAG: ${{ steps.check.outputs.tag }}
+          IMAP_MCP_DRAFTS_FOLDER: ${{ vars.IMAP_MCP_DRAFTS_FOLDER }}
+          IMAP_MCP_SENT_FOLDER: ${{ vars.IMAP_MCP_SENT_FOLDER }}
         run: |
+          extra=()
+          for name in IMAP_MCP_DRAFTS_FOLDER IMAP_MCP_SENT_FOLDER; do
+            [ -z "${!name:-}" ] || extra+=(--set-string "env.$name=${!name}")
+          done
           helm upgrade --install "$RELEASE" deploy/chart --namespace "$NS" \
             --set image.tag="$TAG" --set ingress.host="$INGRESS_HOST" \
+            ${extra[@]+"${extra[@]}"} \
             --atomic --timeout 5m
 
       # Pods read the Secret only at start. Helm rolls them only when the

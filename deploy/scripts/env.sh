@@ -8,7 +8,7 @@ load_env() {
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in ''|\#*) continue ;; esac
     key="${line%%=*}"; val="${line#*=}"
-    case "$key" in INGRESS_HOST|IMAP_MCP_IMAP_HOSTS|IMAP_MCP_ACCESS_TOKENS) ;; *) continue ;; esac
+    case "$key" in INGRESS_HOST|IMAP_MCP_IMAP_HOSTS|IMAP_MCP_ACCESS_TOKENS|IMAP_MCP_DRAFTS_FOLDER|IMAP_MCP_SENT_FOLDER) ;; *) continue ;; esac
     [ -n "${!key:-}" ] || printf -v "$key" '%s' "$val"
   done < "$file"
 }

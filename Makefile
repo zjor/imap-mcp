@@ -17,6 +17,7 @@ lint:
 chart-check:
 	bash deploy/scripts/check-chart.sh
 	bash deploy/scripts/test-ci-validate.sh
+	bash deploy/scripts/test-deploy-script.sh
 
 # Pretty logs with pplog (see pplog.env) when it is installed, raw JSON otherwise.
 .PHONY: run

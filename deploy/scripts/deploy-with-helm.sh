@@ -21,9 +21,16 @@ VERSION="${VERSION#v}"
 load_env "$ENV_FILE"
 require INGRESS_HOST
 
+# Optional folder names, for IMAP servers without SPECIAL-USE.
+extra=()
+for name in IMAP_MCP_DRAFTS_FOLDER IMAP_MCP_SENT_FOLDER; do
+  [ -z "${!name:-}" ] || extra+=(--set-string "env.$name=${!name}")
+done
+
 helm --kube-context "$KUBE_CONTEXT" upgrade --install "$RELEASE" "$CHART" \
   --namespace "$NS" --create-namespace \
   --set image.tag="$VERSION" --set ingress.host="$INGRESS_HOST" \
+  ${extra[@]+"${extra[@]}"} \
   --atomic --timeout 5m
 
 echo "Deployed $RELEASE $VERSION to $NS on $KUBE_CONTEXT."

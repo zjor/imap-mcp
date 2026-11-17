@@ -82,6 +82,13 @@ Names: release `imap-mcp`, namespace `imap-mcp`, Secret `imap-mcp-secrets`. The 
 
    `gh secret set` asks for the value, so it does not go into your shell history.
 
+   Optional: when the IMAP server has no `SPECIAL-USE`, set the folder names as environment **variables** (not secrets). Unset means auto-detect.
+
+   ```sh
+   gh variable set IMAP_MCP_DRAFTS_FOLDER --env production --body Drafts
+   gh variable set IMAP_MCP_SENT_FOLDER --env production --body Sent
+   ```
+
 4. Point DNS for the host at the ingress controller.
 
 ## Deploy
