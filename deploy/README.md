@@ -63,7 +63,9 @@ Names: release `imap-mcp`, namespace `imap-mcp`, Secret `imap-mcp-secrets`. The 
    kubectl --context midgard apply -f deploy/cd/rbac.yaml
    ```
 
-3. Set the other secrets in the GitHub environment `production`:
+3. Create the GitHub environment `production` (repo Settings → Environments). Its deployment branches and tags rule must allow the tag pattern `v*`. A tag push runs the deploy job on a tag ref, not on a branch. So a rule like "Protected branches only" blocks every release deploy. Use "No restriction", or "Selected branches and tags" with a tag rule `v*`. Rollbacks also run on a tag ref (`--ref v0.1.0`), so the same rule covers them.
+
+   Then set the other secrets in this environment:
 
    | Secret | Value |
    |---|---|
