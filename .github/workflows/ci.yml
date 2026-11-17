@@ -2,6 +2,12 @@ name: ci
 on:
   push:
   pull_request:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version to deploy, e.g. 0.1.0 (rollback or redeploy)"
+        required: true
+        type: string
 permissions:
   contents: read
 jobs:
@@ -12,7 +18,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-      - run: make lint test it
+      - run: make lint test it chart-check
 
   release:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
@@ -41,3 +47,87 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Deploys a release to Kubernetes. Runs after `release` on a tag v*, or by
+  # hand (workflow_dispatch) for a rollback. Runbook: deploy/README.md.
+  deploy:
+    needs: [ci, release]
+    if: >-
+      always() && needs.ci.result == 'success' &&
+      (needs.release.result == 'success' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    environment: production
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    env:
+      NS: imap-mcp
+      RELEASE: imap-mcp
+      KUBECONFIG_B64: ${{ secrets.KUBECONFIG }}
+      INGRESS_HOST: ${{ secrets.INGRESS_HOST }}
+      IMAP_MCP_IMAP_HOSTS: ${{ secrets.IMAP_MCP_IMAP_HOSTS }}
+      IMAP_MCP_ACCESS_TOKENS: ${{ secrets.IMAP_MCP_ACCESS_TOKENS }}
+      VERSION: ${{ inputs.version || github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check inputs
+        id: check
+        run: bash deploy/scripts/ci-validate.sh
+
+      - name: Write kubeconfig
+        run: |
+          install -m 600 /dev/null "$RUNNER_TEMP/kubeconfig"
+          printf '%s' "$KUBECONFIG_B64" | base64 -d > "$RUNNER_TEMP/kubeconfig"
+          # GitHub masks only the base64 form; mask the decoded token too.
+          token=$(sed -n 's/^ *token: *//p; s/.*{token: *\([^}]*\)}.*/\1/p' "$RUNNER_TEMP/kubeconfig" | head -1)
+          [ -n "$token" ] && echo "::add-mask::$token"
+          echo "KUBECONFIG=$RUNNER_TEMP/kubeconfig" >> "$GITHUB_ENV"
+
+      # Fails fast on an unknown version or a private GHCR package, instead of
+      # a 5-minute ImagePullBackOff and rollback.
+      - name: Check image is pullable
+        env:
+          TAG: ${{ steps.check.outputs.tag }}
+        run: docker manifest inspect "ghcr.io/zjor/imap-mcp:$TAG" > /dev/null
+
+      - name: Apply secret
+        run: |
+          kubectl -n "$NS" create secret generic imap-mcp-secrets \
+            --from-literal=IMAP_MCP_IMAP_HOSTS="$IMAP_MCP_IMAP_HOSTS" \
+            --from-literal=IMAP_MCP_ACCESS_TOKENS="$IMAP_MCP_ACCESS_TOKENS" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Helm upgrade
+        env:
+          TAG: ${{ steps.check.outputs.tag }}
+        run: |
+          helm upgrade --install "$RELEASE" deploy/chart --namespace "$NS" \
+            --set image.tag="$TAG" --set ingress.host="$INGRESS_HOST" \
+            --atomic --timeout 5m
+
+      # Pods read the Secret only at start. Helm rolls them only when the
+      # rendered chart changes, so restart to pick up a changed token list.
+      - name: Restart pods
+        run: |
+          kubectl -n "$NS" rollout restart "deployment/$RELEASE"
+          kubectl -n "$NS" rollout status "deployment/$RELEASE" --timeout 2m
+
+      - name: Verify
+        env:
+          TAG: ${{ steps.check.outputs.tag }}
+        run: |
+          image=$(kubectl -n "$NS" get deploy "$RELEASE" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}')
+          echo "running: $image"
+          test "$image" = "ghcr.io/zjor/imap-mcp:$TAG"
+          # The certificate may need a few minutes on the first deploy.
+          for i in $(seq 1 30); do
+            body=$(curl -fsS "https://$INGRESS_HOST/healthz" || true)
+            echo "attempt $i: $body"
+            [ "$body" = "ok" ] && exit 0
+            sleep 10
+          done
+          echo "healthz never returned ok"; exit 1

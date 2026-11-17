@@ -5,3 +5,4 @@ test/integration/certs/
 .idea/
 bin/
 .mcp.json
+deploy/.env

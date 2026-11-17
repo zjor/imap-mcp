@@ -1,4 +1,4 @@
-.PHONY: test it lint
+.PHONY: test it lint chart-check
 
 test:
 	go test ./...
@@ -12,6 +12,11 @@ it:
 lint:
 	go vet ./...
 	go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 ./...
+
+# Helm chart: lint and render checks, no cluster needed.
+chart-check:
+	bash deploy/scripts/check-chart.sh
+	bash deploy/scripts/test-ci-validate.sh
 
 # Pretty logs with pplog (see pplog.env) when it is installed, raw JSON otherwise.
 .PHONY: run

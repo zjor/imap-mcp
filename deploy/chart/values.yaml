@@ -1,0 +1,38 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/zjor/imap-mcp
+  # Required. The release version without "v", e.g. 0.1.0.
+  # Set at deploy time: --set image.tag=<version>
+  tag: ""
+
+service:
+  port: 8787
+
+ingress:
+  # Required. Public host name, e.g. mail-mcp.example.com.
+  # Set at deploy time: --set ingress.host=<host>. Also gives
+  # IMAP_MCP_PUBLIC_URL=https://<host>.
+  host: ""
+  # Upload limit (IMAP_MCP_MAX_UPLOAD, 25MB) plus multipart overhead.
+  proxyBodySize: 30m
+
+# Plain env for the container. Secret values are not here.
+env:
+  # The server listens on 0.0.0.0 in the container; only the ingress reaches it.
+  IMAP_MCP_INSECURE_HTTP: "true"
+  IMAP_MCP_MAX_UPLOAD: "25MB"
+  IMAP_MCP_LOG_LEVEL: "info"
+
+# Secret with IMAP_MCP_IMAP_HOSTS and IMAP_MCP_ACCESS_TOKENS, mounted with
+# envFrom. CI writes it from GitHub secrets; deploy/scripts/create-secrets.sh
+# is the manual fallback.
+secretName: imap-mcp-secrets
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 32Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
