@@ -26,7 +26,30 @@ type Config struct {
 	MaxSessionsPerUser int
 	LogLevel           slog.Level
 	LogFormat          string
+	// Env lists the IMAP_MCP_* variables and where each came from. Only
+	// LoadFromEnv fills it. Values are log-safe (see EnvReport).
+	Env map[string]EnvVar
 }
+
+// EnvVar is one environment variable as seen at start.
+type EnvVar struct {
+	Value  string `json:"value"`
+	Source string `json:"source"` // "env", ".env.local" or "default"
+}
+
+const redacted = "[redacted]"
+
+// envKeys are the server variables Load reads.
+var envKeys = []string{
+	"IMAP_MCP_LISTEN", "IMAP_MCP_IMAP_HOSTS", "IMAP_MCP_ACCESS_TOKENS",
+	"IMAP_MCP_PUBLIC_URL", "IMAP_MCP_MAX_UPLOAD", "IMAP_MCP_DRAFTS_FOLDER",
+	"IMAP_MCP_SENT_FOLDER", "IMAP_MCP_TLS_CERT", "IMAP_MCP_TLS_KEY",
+	"IMAP_MCP_INSECURE_HTTP", "IMAP_MCP_MAX_SESSIONS_PER_USER",
+	"IMAP_MCP_LOG_LEVEL", "IMAP_MCP_LOG_FORMAT",
+}
+
+// secretKeys hold values that must never be logged.
+var secretKeys = map[string]bool{"IMAP_MCP_ACCESS_TOKENS": true}
 
 // Load builds a Config from getenv. It is pure so tests can pass a map.
 func Load(getenv func(string) string) (Config, error) {
@@ -88,12 +111,60 @@ func LoadFromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	return Load(func(k string) string {
+	c, err := Load(func(k string) string {
 		if v, ok := os.LookupEnv(k); ok {
 			return v
 		}
 		return file[k]
 	})
+	c.Env = EnvReport(os.Environ(), file)
+	return c, err
+}
+
+// EnvReport lists every server variable and every other IMAP_MCP_* variable
+// found in environ (KEY=VALUE pairs) or file, with its source. The OS
+// environment wins over file, as in LoadFromEnv. Secret values and values
+// of unknown keys are redacted, because an unknown key may be a typo of a
+// secret or a client token.
+func EnvReport(environ []string, file map[string]string) map[string]EnvVar {
+	osEnv := map[string]string{}
+	for _, kv := range environ {
+		if k, v, ok := strings.Cut(kv, "="); ok && strings.HasPrefix(k, "IMAP_MCP_") {
+			osEnv[k] = v
+		}
+	}
+	known := map[string]bool{}
+	for _, k := range envKeys {
+		known[k] = true
+	}
+	keys := append([]string{}, envKeys...)
+	for k := range osEnv {
+		if !known[k] {
+			keys = append(keys, k)
+		}
+	}
+	for k := range file {
+		if !known[k] && strings.HasPrefix(k, "IMAP_MCP_") {
+			keys = append(keys, k)
+		}
+	}
+	out := make(map[string]EnvVar, len(keys))
+	for _, k := range keys {
+		var e EnvVar
+		if v, ok := osEnv[k]; ok {
+			e = EnvVar{Value: v, Source: "env"}
+		} else if v, ok := file[k]; ok {
+			e = EnvVar{Value: v, Source: ".env.local"}
+		} else {
+			out[k] = EnvVar{Source: "default"}
+			continue
+		}
+		if secretKeys[k] || !known[k] {
+			e.Value = redacted
+		}
+		out[k] = e
+	}
+	return out
 }
 
 // Redacted returns a log-safe view. Tokens appear only as a count.

@@ -91,7 +91,11 @@ func ListenAndServe(ctx context.Context, cfg config.Config, h http.Handler) erro
 		IdleTimeout:       idleTimeout,
 		BaseContext:       func(net.Listener) context.Context { return context.WithoutCancel(ctx) },
 	}
-	logger.Info("server.start", "config", cfg.Redacted())
+	attrs := []any{"config", cfg.Redacted()}
+	if cfg.Env != nil {
+		attrs = append(attrs, "env", cfg.Env)
+	}
+	logger.Info("server.start", attrs...)
 
 	errc := make(chan error, 1)
 	go func() {

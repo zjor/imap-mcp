@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -15,7 +15,12 @@ import (
 func main() {
 	cfg, err := config.LoadFromEnv()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "fatal:", err)
+		// No valid config, so no log settings: use the defaults (JSON, info).
+		attrs := []any{"error", err.Error()}
+		if cfg.Env != nil {
+			attrs = append(attrs, "env", cfg.Env)
+		}
+		logging.New(os.Stdout, slog.LevelInfo, "json").Error("config.invalid", attrs...)
 		os.Exit(1)
 	}
 	logger := logging.New(os.Stdout, cfg.LogLevel, cfg.LogFormat)
