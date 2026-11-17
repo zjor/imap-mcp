@@ -145,3 +145,47 @@ func TestRedacted_HidesTokens(t *testing.T) {
 }
 
 func fmtAny(v any) string { return fmt.Sprintf("%v", v) }
+
+func TestEnvReport_SourcesAndRedaction(t *testing.T) {
+	environ := []string{
+		"PATH=/bin",
+		"IMAP_MCP_LISTEN=0.0.0.0:9000",
+		"IMAP_MCP_ACCESS_TOKENS=tok-secret-env",
+		"IMAP_MCP_ACESS_TOKENS=tok-secret-typo",
+	}
+	file := map[string]string{
+		"IMAP_MCP_LISTEN":     "127.0.0.1:1",
+		"IMAP_MCP_IMAP_HOSTS": "imap.example.com:993",
+		"IMAP_MCP_TOKEN":      "tok-secret-client",
+		"IMAP_PASSWORD":       "pw-secret",
+	}
+	got := EnvReport(environ, file)
+
+	want := map[string]EnvVar{
+		"IMAP_MCP_LISTEN":        {Value: "0.0.0.0:9000", Source: "env"},
+		"IMAP_MCP_ACCESS_TOKENS": {Value: redacted, Source: "env"},
+		"IMAP_MCP_ACESS_TOKENS":  {Value: redacted, Source: "env"},
+		"IMAP_MCP_IMAP_HOSTS":    {Value: "imap.example.com:993", Source: ".env.local"},
+		"IMAP_MCP_TOKEN":         {Value: redacted, Source: ".env.local"},
+		"IMAP_MCP_LOG_LEVEL":     {Source: "default"},
+	}
+	for k, w := range want {
+		if got[k] != w {
+			t.Errorf("%s: got %+v want %+v", k, got[k], w)
+		}
+	}
+	if _, ok := got["PATH"]; ok {
+		t.Error("non-IMAP_MCP_ key from environ is logged")
+	}
+	if _, ok := got["IMAP_PASSWORD"]; ok {
+		t.Error("non-IMAP_MCP_ key from file is logged")
+	}
+	for k := range envKeys {
+		if _, ok := got[envKeys[k]]; !ok {
+			t.Errorf("known key %s missing", envKeys[k])
+		}
+	}
+	if s := fmtAny(got); strings.Contains(s, "secret") {
+		t.Errorf("leak: %s", s)
+	}
+}

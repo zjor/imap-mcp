@@ -189,6 +189,8 @@ The server reads environment variables only. For local development it also reads
 | `IMAP_MCP_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 | `IMAP_MCP_LOG_FORMAT` | `json` | `json` or `text` |
 
+At start the server logs one `server.start` line. It has the effective config and an `env` block. The `env` block lists every `IMAP_MCP_*` variable with its source: `env`, `.env.local` or `default`. Access tokens and unknown `IMAP_MCP_*` keys show as `[redacted]`. An invalid config logs one JSON `config.invalid` line with the same `env` block, then the server exits with code 1.
+
 Client-side variables, read by `scripts/imap-mcp-headers.sh` and `scripts/imap-mcp-curl` (from the environment or `.env.local`):
 
 | Variable | Meaning |
