@@ -39,10 +39,12 @@ var (
 	ErrNotEditable = errors.New("draft not found or not editable")
 	// ErrTooLarge means the message exceeds the server's APPEND limit.
 	ErrTooLarge = errors.New("draft is larger than the server accepts")
+	// ErrNoDrafts means the server marks no folder as \Drafts and
+	// IMAP_MCP_DRAFTS_FOLDER is not set.
+	ErrNoDrafts = errors.New("the server has no Drafts folder; set IMAP_MCP_DRAFTS_FOLDER")
 
-	errNoDrafts = errors.New("the server has no Drafts folder; set IMAP_MCP_DRAFTS_FOLDER")
-	errBroken   = errors.New("imap session closed after an aborted APPEND")
-	errAborted  = errors.New("append aborted")
+	errBroken  = errors.New("imap session closed after an aborted APPEND")
+	errAborted = errors.New("append aborted")
 )
 
 // headCapture is how many leading bytes of an appended message AppendDraft
@@ -369,7 +371,7 @@ func (s *Session) ListDrafts(ctx context.Context, beforeUID uint32, limit int) (
 
 func (s *Session) draftsFolder() (string, error) {
 	if s.folders.Drafts == "" {
-		return "", errNoDrafts
+		return "", ErrNoDrafts
 	}
 	return s.folders.Drafts, nil
 }

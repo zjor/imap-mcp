@@ -145,3 +145,10 @@ func TestClampLimit(t *testing.T) {
 		}
 	}
 }
+
+func TestClassify_NoDraftsFolder(t *testing.T) {
+	code, msg := classify(fmt.Errorf("x: %w", imapsafe.ErrNoDrafts))
+	if code != codeUnsupported || !strings.Contains(msg, "IMAP_MCP_DRAFTS_FOLDER") {
+		t.Errorf("classify(ErrNoDrafts) = %q, %q; want %q naming IMAP_MCP_DRAFTS_FOLDER", code, msg, codeUnsupported)
+	}
+}
