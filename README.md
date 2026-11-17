@@ -270,6 +270,13 @@ make it     # integration tests against Dovecot in Docker
 make lint   # go vet and staticcheck
 ```
 
+Logs are JSON lines. To read them locally, install [pplog](https://github.com/michurin/human-readable-json-logging) and run the server through it. pplog reads `pplog.env` from the current directory.
+
+```sh
+go install github.com/michurin/human-readable-json-logging/cmd/pplog@latest
+make run   # uses pplog when it is installed, raw JSON otherwise
+```
+
 ## License
 
 MIT. See [LICENSE](LICENSE).

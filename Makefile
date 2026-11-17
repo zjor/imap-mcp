@@ -12,3 +12,9 @@ it:
 lint:
 	go vet ./...
 	go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 ./...
+
+# Pretty logs with pplog (see pplog.env) when it is installed, raw JSON otherwise.
+.PHONY: run
+run:
+	@if command -v pplog >/dev/null 2>&1; then pplog go run ./cmd/imap-mcp; \
+	else echo "pplog not found, logs are raw JSON" >&2; go run ./cmd/imap-mcp; fi
