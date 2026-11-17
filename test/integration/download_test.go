@@ -5,6 +5,7 @@ package integration
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -91,8 +92,11 @@ func TestDownload_BytesAndHeaders(t *testing.T) {
 			t.Errorf("%s = %q, want %q", k, got, v)
 		}
 	}
-	if !strings.Contains(srv.logs.String(), "attachment.downloaded") {
-		t.Errorf("no audit line: %s", srv.logs.String())
+	audit := logLine(srv.logs.String(), "attachment.downloaded")
+	for _, want := range []string{"folder=INBOX", fmt.Sprintf("message_uid=%d", uid), "Faktura", "size=7"} {
+		if !strings.Contains(audit, want) {
+			t.Errorf("audit line %q lacks %q", audit, want)
+		}
 	}
 
 	// HEAD: same headers, no body.

@@ -101,8 +101,8 @@ func download(d *imapsafe.Dialer, w http.ResponseWriter, r *http.Request) {
 		// error and not a short file that looks complete.
 		panic(http.ErrAbortHandler)
 	}
-	log.Info("attachment.downloaded", "message_uid", id.UID, "part", partPath(id.Part),
-		"size", n, "duration_ms", time.Since(start).Milliseconds())
+	log.Info("attachment.downloaded", "folder", id.Folder, "message_uid", id.UID, "part", partPath(id.Part),
+		"filename", name, "size", n, "duration_ms", time.Since(start).Milliseconds())
 }
 
 // ctxWriter stops a copy when the request context ends.

@@ -4,6 +4,7 @@ package integration
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -191,8 +192,12 @@ func TestCreateDraft_New(t *testing.T) {
 	}
 
 	logs := srv.logs.String()
-	if !strings.Contains(logs, "draft.created") {
-		t.Error("no draft.created audit line")
+	audit := logLine(logs, "draft.created")
+	for _, want := range []string{"draft_id=" + d.DraftID, "folder=" + draftsFolder, fmt.Sprintf(" uid=%d", uid),
+		"attachments=0", "filenames=[]"} {
+		if !strings.Contains(audit, want) {
+			t.Errorf("audit line %q lacks %q", audit, want)
+		}
 	}
 	for _, secret := range []string{subject, "bob@example.com", "audit@example.com", "Dobrý den"} {
 		if strings.Contains(logs, secret) {
