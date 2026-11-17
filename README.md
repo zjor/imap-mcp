@@ -274,7 +274,7 @@ Logs are JSON lines. To read them locally, install [pplog](https://github.com/mi
 
 ```sh
 go install github.com/michurin/human-readable-json-logging/cmd/pplog@latest
-pplog go run ./cmd/imap-mcp
+make run   # uses pplog when it is installed, raw JSON otherwise
 ```
 
 ## License
