@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"os"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/zjor/imap-mcp/internal/drafts"
@@ -95,6 +97,10 @@ func rebuildDraft(ctx context.Context, s *imapsafe.Session, draftID string, edit
 	if err != nil {
 		return rebuilt{}, err
 	}
+	if old.AttachmentsTruncated {
+		// A rebuild would drop the parts the list leaves out.
+		return rebuilt{}, badArg("the draft has more attachments than the server can keep")
+	}
 	input := draftInput(old, draftID)
 	keep, err := edit(old, &input)
 	if err != nil {
@@ -107,7 +113,7 @@ func rebuildDraft(ctx context.Context, s *imapsafe.Session, draftID string, edit
 		if !keep(a) {
 			continue
 		}
-		if err := sp.add(ctx, s, ids.AttachmentID{MessageID: mid, Part: a.Part}, a.Filename, a.ContentType); err != nil {
+		if err := sp.add(ctx, s, ids.AttachmentID{MessageID: mid, Part: a.Part}, a.Filename, partType(a)); err != nil {
 			return rebuilt{}, err
 		}
 	}
@@ -152,6 +158,9 @@ func draftInput(old mailparse.Parsed, draftID string) drafts.Input {
 func storeDraft(ctx context.Context, s *imapsafe.Session, in *drafts.Input, sp *spool) (uint32, int64, error) {
 	in.MessageID = drafts.NewMessageID(in.From)
 	in.Date = time.Now()
+	if err := sp.prepare(); err != nil {
+		return 0, 0, err
+	}
 	parts := sp.parts()
 	size, err := drafts.Size(*in, parts)
 	if err != nil {
@@ -185,7 +194,9 @@ type spool struct{ files []spoolFile }
 
 type spoolFile struct {
 	name, contentType, path string
-	size                    int64
+	// encoding is the drafts.Part encoding; set by prepare.
+	encoding string
+	size     int64
 	// external files belong to the caller; remove skips them.
 	external bool
 }
@@ -197,9 +208,7 @@ func (sp *spool) add(ctx context.Context, s *imapsafe.Session, id ids.Attachment
 	if err != nil {
 		return err
 	}
-	if name == "" {
-		name = "attachment"
-	}
+	name = spoolName(name, contentType)
 	sp.files = append(sp.files, spoolFile{name: name, contentType: contentType, path: f.Name()})
 	r, _, err := s.FetchPart(ctx, id)
 	if err != nil {
@@ -220,10 +229,60 @@ func (sp *spool) parts() []drafts.Part {
 		out = append(out, drafts.Part{
 			Filename:    f.name,
 			ContentType: f.contentType,
+			Encoding:    f.encoding,
 			Open:        func() (io.ReadCloser, error) { return os.Open(f.path) },
 		})
 	}
 	return out
+}
+
+// prepare picks the encoding of each message/* file. A file that cannot
+// stay a message part (bare LF, long lines, NUL) becomes
+// application/octet-stream, so it can go as base64.
+func (sp *spool) prepare() error {
+	for i := range sp.files {
+		f := &sp.files[i]
+		mt, _, err := mime.ParseMediaType(f.contentType)
+		if err != nil || !strings.HasPrefix(mt, "message/") {
+			continue
+		}
+		r, err := os.Open(f.path)
+		if err != nil {
+			return err
+		}
+		enc, err := drafts.MessageEncoding(r)
+		r.Close()
+		if err != nil {
+			return err
+		}
+		f.encoding = enc
+		if enc == "" {
+			f.contentType = "application/octet-stream"
+		}
+	}
+	return nil
+}
+
+// partType is the content type to give a copied attachment: its media
+// type plus the charset of a text part.
+func partType(a mailparse.Attachment) string {
+	if a.Charset != "" {
+		if t := mime.FormatMediaType(a.ContentType, map[string]string{"charset": a.Charset}); t != "" {
+			return t
+		}
+	}
+	return a.ContentType
+}
+
+// spoolName is the file name for a copied attachment without one.
+func spoolName(name, contentType string) string {
+	switch {
+	case name != "":
+		return name
+	case contentType == "message/rfc822":
+		return "message.eml"
+	}
+	return "attachment"
 }
 
 // remove deletes the temp files it owns. It runs deferred, so also on

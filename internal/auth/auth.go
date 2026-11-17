@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/zjor/imap-mcp/internal/apierr"
 	"github.com/zjor/imap-mcp/internal/config"
 	"github.com/zjor/imap-mcp/internal/imapsafe"
 	"github.com/zjor/imap-mcp/internal/logging"
@@ -43,7 +44,7 @@ func Middleware(cfg config.Config) func(http.Handler) http.Handler {
 			if !ok || !tokenAllowed(hashes, token) {
 				log.Warn("auth.rejected", "status", http.StatusUnauthorized, "reason", "bad or missing access token")
 				w.Header().Set("WWW-Authenticate", "Bearer")
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				apierr.Write(r.Context(), w, http.StatusUnauthorized, "auth_failed", "missing or wrong access token")
 				return
 			}
 			log = log.With("token_id", logging.TokenID(token))
@@ -52,7 +53,7 @@ func Middleware(cfg config.Config) func(http.Handler) http.Handler {
 			pass := r.Header.Get("X-IMAP-Password")
 			if user == "" || pass == "" {
 				log.Warn("auth.rejected", "status", http.StatusUnauthorized, "reason", "missing IMAP username or password")
-				http.Error(w, "missing X-IMAP-Username or X-IMAP-Password", http.StatusUnauthorized)
+				apierr.Write(r.Context(), w, http.StatusUnauthorized, "auth_failed", "missing X-IMAP-Username or X-IMAP-Password")
 				return
 			}
 			log = log.With("user", user)
@@ -60,7 +61,7 @@ func Middleware(cfg config.Config) func(http.Handler) http.Handler {
 			host, ok := pickHost(cfg.IMAPHosts, r.Header.Get("X-IMAP-Host"))
 			if !ok {
 				log.Warn("auth.rejected", "status", http.StatusForbidden, "reason", "IMAP host not allowed")
-				http.Error(w, "IMAP host not allowed", http.StatusForbidden)
+				apierr.Write(r.Context(), w, http.StatusForbidden, "host_not_allowed", "IMAP host not allowed")
 				return
 			}
 			log = log.With("imap_host", host)

@@ -5,17 +5,20 @@ package drafts
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"mime"
+	"mime/quotedprintable"
 	"net/mail"
 	"strings"
 	"time"
 
 	"github.com/emersion/go-message"
 	gomail "github.com/emersion/go-message/mail"
+	"github.com/emersion/go-message/textproto"
 
 	"github.com/zjor/imap-mcp/internal/mailparse"
 )
@@ -51,7 +54,11 @@ type Input struct {
 // streamed and never held fully in memory.
 type Part struct {
 	Filename, ContentType string
-	Open                  func() (io.ReadCloser, error)
+	// Encoding is the Content-Transfer-Encoding: "" for base64, or "7bit"
+	// or "8bit" for a message/* part that MessageEncoding accepted.
+	// RFC 2046 §5.2.1 forbids base64 for message/rfc822.
+	Encoding string
+	Open     func() (io.ReadCloser, error)
 }
 
 // Build writes a full RFC 5322 message to w.
@@ -68,8 +75,7 @@ func Build(w io.Writer, in Input, attachments []Part) error {
 		return writeAlternative(w, h, in, boundary(in.DraftID, "alt"))
 	}
 
-	h.SetContentType("multipart/mixed", map[string]string{"boundary": boundary(in.DraftID, "mixed")})
-	mw, err := message.CreateWriter(w, h.Header)
+	mw, err := multipartRoot(w, h, "multipart/mixed", boundary(in.DraftID, "mixed"))
 	if err != nil {
 		return err
 	}
@@ -84,28 +90,60 @@ func Build(w io.Writer, in Input, attachments []Part) error {
 	return mw.Close()
 }
 
-func writeBodyPart(mw *message.Writer, in Input) error {
-	var ph message.Header
-	if in.BodyHTML == "" {
-		textHeader(&ph)
-		pw, err := mw.CreatePart(ph)
-		if err != nil {
-			return err
-		}
-		if _, err := io.WriteString(pw, in.BodyText); err != nil {
-			return err
-		}
-		return pw.Close()
+// multipartRoot writes the root header for a multipart message and returns
+// the part writer. The multipart levels use go-message's textproto writer
+// and not message.Writer, because message.Writer refuses a part whose
+// charset is not UTF-8, and a kept text attachment must keep its charset.
+func multipartRoot(w io.Writer, h gomail.Header, mediaType, b string) (*textproto.MultipartWriter, error) {
+	h.SetContentType(mediaType, map[string]string{"boundary": b})
+	if !h.Has("Mime-Version") {
+		h.Set("MIME-Version", "1.0")
 	}
-	ph.SetContentType("multipart/alternative", map[string]string{"boundary": boundary(in.DraftID, "alt")})
-	pw, err := mw.CreatePart(ph)
+	if err := textproto.WriteHeader(w, h.Header.Header); err != nil {
+		return nil, err
+	}
+	return newMultipart(w, b)
+}
+
+func newMultipart(w io.Writer, b string) (*textproto.MultipartWriter, error) {
+	mw := textproto.NewMultipartWriter(w)
+	if err := mw.SetBoundary(b); err != nil {
+		return nil, err
+	}
+	return mw, nil
+}
+
+func writeBodyPart(mw *textproto.MultipartWriter, in Input) error {
+	if in.BodyHTML == "" {
+		var ph message.Header
+		textHeader(&ph)
+		return writeQP(mw, ph, in.BodyText)
+	}
+	b := boundary(in.DraftID, "alt")
+	var ph message.Header
+	ph.SetContentType("multipart/alternative", map[string]string{"boundary": b})
+	pw, err := mw.CreatePart(ph.Header)
 	if err != nil {
 		return err
 	}
-	if err := altParts(pw, in); err != nil {
+	alt, err := newMultipart(pw, b)
+	if err != nil {
 		return err
 	}
-	return pw.Close()
+	return altParts(alt, in)
+}
+
+// writeQP writes one quoted-printable part.
+func writeQP(mw *textproto.MultipartWriter, h message.Header, body string) error {
+	pw, err := mw.CreatePart(h.Header)
+	if err != nil {
+		return err
+	}
+	qp := quotedprintable.NewWriter(pw)
+	if _, err := io.WriteString(qp, body); err != nil {
+		return err
+	}
+	return qp.Close()
 }
 
 func writeText(w io.Writer, h gomail.Header, text string) error {
@@ -121,38 +159,26 @@ func writeText(w io.Writer, h gomail.Header, text string) error {
 }
 
 func writeAlternative(w io.Writer, h gomail.Header, in Input, b string) error {
-	h.SetContentType("multipart/alternative", map[string]string{"boundary": b})
-	mw, err := message.CreateWriter(w, h.Header)
+	mw, err := multipartRoot(w, h, "multipart/alternative", b)
 	if err != nil {
 		return err
 	}
-	if err := altParts(mw, in); err != nil {
-		return err
-	}
-	return mw.Close()
+	return altParts(mw, in)
 }
 
-func altParts(mw *message.Writer, in Input) error {
+// altParts writes the text and HTML parts and closes mw.
+func altParts(mw *textproto.MultipartWriter, in Input) error {
 	var th, hh message.Header
 	textHeader(&th)
 	hh.SetContentType("text/html", map[string]string{"charset": "utf-8"})
 	hh.Set("Content-Transfer-Encoding", "quoted-printable")
-	for _, p := range []struct {
-		h    message.Header
-		body string
-	}{{th, in.BodyText}, {hh, in.BodyHTML}} {
-		pw, err := mw.CreatePart(p.h)
-		if err != nil {
-			return err
-		}
-		if _, err := io.WriteString(pw, p.body); err != nil {
-			return err
-		}
-		if err := pw.Close(); err != nil {
-			return err
-		}
+	if err := writeQP(mw, th, in.BodyText); err != nil {
+		return err
 	}
-	return nil
+	if err := writeQP(mw, hh, in.BodyHTML); err != nil {
+		return err
+	}
+	return mw.Close()
 }
 
 func textHeader(h *message.Header) {
@@ -160,7 +186,7 @@ func textHeader(h *message.Header) {
 	h.Set("Content-Transfer-Encoding", "quoted-printable")
 }
 
-func writeAttachment(mw *message.Writer, a Part) error {
+func writeAttachment(mw *textproto.MultipartWriter, a Part) error {
 	if a.Open == nil {
 		return errors.New("attachment " + a.Filename + ": no Open function")
 	}
@@ -191,20 +217,63 @@ func writeAttachment(mw *message.Writer, a Part) error {
 		return errors.New("attachment: bad filename " + a.Filename)
 	}
 	ph.Set("Content-Disposition", disp)
-	ph.Set("Content-Transfer-Encoding", "base64")
+	switch a.Encoding {
+	case "":
+		ph.Set("Content-Transfer-Encoding", "base64")
+	case "7bit", "8bit":
+		if !strings.HasPrefix(mt, "message/") {
+			return fmt.Errorf("attachment %q: encoding %s is only for message parts", a.Filename, a.Encoding)
+		}
+		ph.Set("Content-Transfer-Encoding", a.Encoding)
+	default:
+		return fmt.Errorf("attachment %q: bad encoding %q", a.Filename, a.Encoding)
+	}
 	rc, err := a.Open()
 	if err != nil {
 		return err
 	}
 	defer rc.Close()
-	pw, err := mw.CreatePart(ph)
+	pw, err := mw.CreatePart(ph.Header)
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(pw, rc); err != nil {
+	if a.Encoding != "" {
+		// MessageEncoding checked the lines; copy as is.
+		_, err := io.Copy(pw, rc)
 		return err
 	}
-	return pw.Close()
+	enc := base64.NewEncoder(base64.StdEncoding, &lineWrapper{w: pw})
+	if _, err := io.Copy(enc, rc); err != nil {
+		return err
+	}
+	return enc.Close()
+}
+
+// lineWrapper breaks base64 output into lines of 76 characters.
+type lineWrapper struct {
+	w   io.Writer
+	col int
+}
+
+func (l *lineWrapper) Write(p []byte) (int, error) {
+	n := 0
+	for len(p) > 0 {
+		if l.col == 76 {
+			if _, err := io.WriteString(l.w, "\r\n"); err != nil {
+				return n, err
+			}
+			l.col = 0
+		}
+		k := min(76-l.col, len(p))
+		m, err := l.w.Write(p[:k])
+		n += m
+		l.col += m
+		if err != nil {
+			return n, err
+		}
+		p = p[k:]
+	}
+	return n, nil
 }
 
 func rootHeader(in Input) (gomail.Header, error) {
@@ -361,4 +430,49 @@ func prefixed(subject, prefix string, skip ...string) string {
 		}
 	}
 	return prefix + " " + s
+}
+
+// maxLine is the RFC 5322 line limit without CRLF.
+const maxLine = 998
+
+// MessageEncoding checks whether r can go into a message/* part as it is.
+// It returns "7bit" or "8bit" when every line ends in CRLF, is at most 998
+// bytes and has no NUL, bare CR or bare LF. Otherwise it returns "": the
+// part needs base64 and so cannot stay message/*.
+func MessageEncoding(r io.Reader) (string, error) {
+	buf := make([]byte, 32<<10)
+	enc := "7bit"
+	line, prevCR := 0, false
+	for {
+		n, err := r.Read(buf)
+		for _, b := range buf[:n] {
+			switch {
+			case b == '\n':
+				if !prevCR {
+					return "", nil
+				}
+				line, prevCR = 0, false
+				continue
+			case prevCR, b == 0:
+				return "", nil
+			case b == '\r':
+				prevCR = true
+				continue
+			case b >= 0x80:
+				enc = "8bit"
+			}
+			if line++; line > maxLine {
+				return "", nil
+			}
+		}
+		if err == io.EOF {
+			if prevCR {
+				return "", nil
+			}
+			return enc, nil
+		}
+		if err != nil {
+			return "", err
+		}
+	}
 }

@@ -2,15 +2,14 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/zjor/imap-mcp/internal/apierr"
 	"github.com/zjor/imap-mcp/internal/ids"
 	"github.com/zjor/imap-mcp/internal/imapsafe"
-	"github.com/zjor/imap-mcp/internal/logging"
 	"github.com/zjor/imap-mcp/internal/mailparse"
 )
 
@@ -66,27 +65,12 @@ func classify(err error) (code, message string) {
 	return codeIMAPError, "IMAP server error"
 }
 
-type errorBody struct {
-	Code      string `json:"code"`
-	Message   string `json:"message"`
-	RequestID string `json:"request_id"`
-}
-
 // errorResult is the tool result for err: IsError set and the JSON error
 // shape as text.
 func errorResult(ctx context.Context, code, message string) *mcp.CallToolResult {
-	return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: string(ErrorJSON(ctx, code, message))}}}
+	return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: string(apierr.JSON(ctx, code, message))}}}
 }
 
 // Classify maps err to the tool error code and its fixed message. The HTTP
 // download endpoint uses it to share the code mapping.
 func Classify(err error) (code, message string) { return classify(err) }
-
-// ErrorJSON returns the JSON error shape ({"error":{code,message,request_id}})
-// for ctx's request.
-func ErrorJSON(ctx context.Context, code, message string) []byte {
-	b, _ := json.Marshal(map[string]errorBody{"error": {
-		Code: code, Message: message, RequestID: logging.RequestID(ctx),
-	}})
-	return b
-}

@@ -12,6 +12,7 @@ import (
 	"github.com/emersion/go-imap/v2"
 
 	"github.com/zjor/imap-mcp/internal/ids"
+	"github.com/zjor/imap-mcp/internal/mailparse"
 )
 
 var day0 = time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
@@ -240,5 +241,23 @@ func TestReadEmail_UnparseableError(t *testing.T) {
 	code, msg := classify(err)
 	if code != codeUnparseable || strings.Contains(msg, "numbers inside") {
 		t.Errorf("classify(%v) = %q, %q", err, code, msg)
+	}
+}
+
+func TestReadEmail_AttachmentsTruncated(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("From: a@example.com\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n")
+	for i := 0; i < mailparse.MaxAttachments+3; i++ {
+		b.WriteString("--b\r\nContent-Type: application/octet-stream\r\n\r\nx\r\n")
+	}
+	b.WriteString("--b--\r\n")
+	inbox := map[uint32]fakeMsg{1: {date: day0, raw: b.String()}}
+	mb := &fakeMailbox{folders: map[string]map[uint32]fakeMsg{"INBOX": inbox}}
+	e, _, err := readMessage(context.Background(), mb, Deps{}, ids.MessageID{Folder: "INBOX", UIDValidity: 7, UID: 1}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(e.Attachments) != mailparse.MaxAttachments || !e.AttachmentsTruncated {
+		t.Errorf("%d attachments, truncated %v", len(e.Attachments), e.AttachmentsTruncated)
 	}
 }

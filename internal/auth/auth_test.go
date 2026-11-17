@@ -2,6 +2,7 @@ package auth
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -53,6 +54,8 @@ type result struct {
 	creds  Credentials
 	ok     bool
 	inner  string // log written by the next handler
+	body   []byte
+	ctype  string
 }
 
 func run(t *testing.T, cfg config.Config, r *http.Request) result {
@@ -68,6 +71,8 @@ func run(t *testing.T, cfg config.Config, r *http.Request) result {
 	rec := httptest.NewRecorder()
 	logging.RequestMiddleware(base)(Middleware(cfg)(next)).ServeHTTP(rec, r)
 	res.status = rec.Code
+	res.body = rec.Body.Bytes()
+	res.ctype = rec.Header().Get("Content-Type")
 	res.log = buf.String()
 	for _, line := range strings.Split(res.log, "\n") {
 		if strings.Contains(line, "msg=inner") {
@@ -90,6 +95,20 @@ func expectReject(t *testing.T, res result, status int) {
 	}
 	if !strings.Contains(res.log, "level=WARN") {
 		t.Errorf("no warn log: %s", res.log)
+	}
+	want := map[int]string{401: "auth_failed", 403: "host_not_allowed"}[status]
+	var body struct {
+		Error struct {
+			Code      string `json:"code"`
+			Message   string `json:"message"`
+			RequestID string `json:"request_id"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(res.body, &body); err != nil || res.ctype != "application/json" {
+		t.Fatalf("body %q (%s) is not the JSON error shape: %v", res.body, res.ctype, err)
+	}
+	if body.Error.Code != want || body.Error.Message == "" || body.Error.RequestID == "" {
+		t.Errorf("error = %+v, want code %q and a request_id", body.Error, want)
 	}
 }
 

@@ -98,6 +98,9 @@ func upload(d *imapsafe.Dialer, maxUpload int64, w http.ResponseWriter, r *http.
 		switch {
 		case errors.Is(err, os.ErrDeadlineExceeded):
 			logging.From(ctx).Warn("upload.aborted", "draft_id", draftID, "reason", "no data for too long", "idle_s", uploadIdle.Seconds())
+			// Without it net/http reads the rest of the stalled body
+			// before it sends the response, so the client never sees it.
+			w.Header().Set("Connection", "close")
 			writeError(ctx, w, http.StatusRequestTimeout, "bad_argument", "upload stalled: no data for too long")
 		case errors.As(err, &mbe):
 			logging.From(ctx).Warn("upload.rejected", "status", http.StatusRequestEntityTooLarge, "code", "too_large",

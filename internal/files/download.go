@@ -4,7 +4,6 @@ package files
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -14,12 +13,12 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/zjor/imap-mcp/internal/apierr"
 	"github.com/zjor/imap-mcp/internal/auth"
 	"github.com/zjor/imap-mcp/internal/ids"
 	"github.com/zjor/imap-mcp/internal/imapsafe"
 	"github.com/zjor/imap-mcp/internal/logging"
 	"github.com/zjor/imap-mcp/internal/mailparse"
-	"github.com/zjor/imap-mcp/internal/tools"
 )
 
 const copyBufSize = 32 << 10
@@ -101,8 +100,8 @@ func download(d *imapsafe.Dialer, w http.ResponseWriter, r *http.Request) {
 		// error and not a short file that looks complete.
 		panic(http.ErrAbortHandler)
 	}
-	log.Info("attachment.downloaded", "message_uid", id.UID, "part", partPath(id.Part),
-		"size", n, "duration_ms", time.Since(start).Milliseconds())
+	log.Info("attachment.downloaded", "folder", id.Folder, "message_uid", id.UID, "part", partPath(id.Part),
+		"filename", name, "size", n, "duration_ms", time.Since(start).Milliseconds())
 }
 
 // ctxWriter stops a copy when the request context ends.
@@ -149,24 +148,21 @@ func fail(ctx context.Context, w http.ResponseWriter, kind string, err error, at
 		status = http.StatusForbidden
 	case "too_large":
 		status = http.StatusRequestEntityTooLarge
+	case "unsupported":
+		status = http.StatusNotImplemented
 	}
 	log := logging.From(ctx)
 	switch status {
 	case http.StatusUnauthorized, http.StatusForbidden, http.StatusConflict, http.StatusRequestEntityTooLarge:
 		log.Warn(kind+".rejected", append([]any{"status", status, "code", code}, attrs...)...)
 	case http.StatusBadGateway:
-		if !errors.Is(err, imapsafe.ErrUnsupported) {
-			log.Error(kind+".failed", append([]any{"error", err.Error()}, attrs...)...)
-		}
+		log.Error(kind+".failed", append([]any{"error", err.Error()}, attrs...)...)
 	}
 	writeError(ctx, w, status, code, msg)
 }
 
 func writeError(ctx context.Context, w http.ResponseWriter, status int, code, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(status)
-	_, _ = w.Write(tools.ErrorJSON(ctx, code, msg))
+	apierr.Write(ctx, w, status, code, msg)
 }
 
 // contentDisposition builds the attachment header with an RFC 5987

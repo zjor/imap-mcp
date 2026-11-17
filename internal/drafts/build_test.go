@@ -228,3 +228,68 @@ func TestNewMessageID(t *testing.T) {
 		t.Errorf("fallback: %q", got)
 	}
 }
+
+func TestMessageEncoding(t *testing.T) {
+	long := strings.Repeat("a", 998)
+	for _, tc := range []struct{ in, want string }{
+		{"Subject: x\r\n\r\nhi\r\n", "7bit"},
+		{"Subject: x\r\n\r\nhi", "7bit"},
+		{"Subject: x\r\n\r\nčau\r\n", "8bit"},
+		{long + "\r\n", "7bit"},
+		{long + "a\r\n", ""},
+		{"Subject: x\n\nhi\n", ""},
+		{"a\rb\r\n", ""},
+		{"a\r", ""},
+		{"a\x00b\r\n", ""},
+		{"", "7bit"},
+	} {
+		got, err := MessageEncoding(strings.NewReader(tc.in))
+		if err != nil || got != tc.want {
+			t.Errorf("MessageEncoding(%.20q) = %q, %v; want %q", tc.in, got, err, tc.want)
+		}
+	}
+}
+
+func TestBuild_MessagePartKeepsEncoding(t *testing.T) {
+	inner := "From: x@example.com\r\nSubject: inner\r\n\r\nčau\r\n"
+	p := att("fwd.eml", []byte(inner))
+	p.ContentType, p.Encoding = "message/rfc822", "8bit"
+	raw := build(t, base(), []Part{p})
+	if !strings.Contains(raw, "Content-Transfer-Encoding: 8bit") || !strings.Contains(raw, inner) {
+		t.Fatalf("message part not kept as is:\n%s", raw)
+	}
+
+	bad := att("x.bin", []byte("x"))
+	bad.Encoding = "8bit"
+	in := base()
+	in.Date, in.MessageID = fixedDate, "m1@example.com"
+	if err := Build(io.Discard, in, []Part{bad}); err == nil {
+		t.Error("8bit accepted for a non-message part")
+	}
+}
+
+func TestBuild_TextAttachmentKeepsCharset(t *testing.T) {
+	p := att("a.txt", []byte("\xb1\xe8"))
+	p.ContentType = "text/plain; charset=iso-8859-2"
+	raw := build(t, base(), []Part{p})
+	if !strings.Contains(raw, `charset=iso-8859-2`) {
+		t.Fatalf("charset lost:\n%s", raw)
+	}
+}
+
+func TestBuild_Base64LinesWrapped(t *testing.T) {
+	in := base()
+	in.BodyHTML = "<p>x</p>"
+	raw := build(t, in, []Part{att("a.bin", bytes.Repeat([]byte{0xff}, 1000))})
+	for _, l := range strings.Split(raw, "\r\n") {
+		if len(l) > 76 && !strings.Contains(l, ":") {
+			t.Fatalf("line of %d bytes: %q", len(l), l)
+		}
+	}
+	if strings.Contains(strings.ReplaceAll(raw, "\r\n", ""), "\n") {
+		t.Error("bare LF in the message")
+	}
+	if strings.Count(strings.ToLower(raw), "mime-version") != 1 {
+		t.Errorf("MIME-Version count:\n%s", raw)
+	}
+}

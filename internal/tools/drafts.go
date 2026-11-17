@@ -172,12 +172,15 @@ func createDraft(ctx context.Context, s *imapsafe.Session, deps Deps, in createD
 			if in.Subject == "" {
 				input.Subject = drafts.ForwardSubject(orig.Headers.Subject)
 			}
+			if orig.AttachmentsTruncated && in.ForwardAttachments == nil {
+				return nil, 0, badArg("the original has more attachments than the server lists; pass forward_attachments")
+			}
 			atts, err := forwardSelection(mid, orig.Attachments, in.ForwardAttachments)
 			if err != nil {
 				return nil, 0, err
 			}
 			for _, a := range atts {
-				if err := sp.add(ctx, s, ids.AttachmentID{MessageID: mid, Part: a.Part}, a.Filename, a.ContentType); err != nil {
+				if err := sp.add(ctx, s, ids.AttachmentID{MessageID: mid, Part: a.Part}, a.Filename, partType(a)); err != nil {
 					return nil, 0, err
 				}
 			}
@@ -195,11 +198,11 @@ func createDraft(ctx context.Context, s *imapsafe.Session, deps Deps, in createD
 		}
 	}
 
-	_, size, err := storeDraft(ctx, s, &input, &sp)
+	uid, size, err := storeDraft(ctx, s, &input, &sp)
 	if err != nil {
 		return nil, 0, err
 	}
-	audit(ctx, "draft.created", input, len(sp.files), size)
+	audit(ctx, "draft.created", s.Folders().Drafts, input, sp.files, size, "uid", uid)
 	return toDraftOut(deps, input, sp.files), 1, nil
 }
 
@@ -227,7 +230,7 @@ func updateDraft(ctx context.Context, s *imapsafe.Session, deps Deps, in updateD
 	}
 	out := toDraftOut(deps, rb.input, rb.files)
 	out.Warning = rb.warning
-	audit(ctx, "draft.updated", rb.input, len(rb.files), rb.size)
+	audit(ctx, "draft.updated", s.Folders().Drafts, rb.input, rb.files, rb.size, "old_uid", rb.oldUID, "uid", rb.uid)
 	return out, 1, nil
 }
 
@@ -245,7 +248,7 @@ func deleteDraft(ctx context.Context, s *imapsafe.Session, in deleteDraftIn) (an
 	if err := s.RemoveOwnDraft(ctx, in.DraftID, uv, uid); err != nil {
 		return nil, 0, err
 	}
-	logging.From(ctx).Info("draft.deleted", "draft_id", in.DraftID, "uid", uid)
+	logging.From(ctx).Info("draft.deleted", "draft_id", in.DraftID, "folder", s.Folders().Drafts, "uid", uid)
 	return map[string]bool{"ok": true}, 1, nil
 }
 
@@ -335,9 +338,19 @@ func toDraftOut(deps Deps, in drafts.Input, files []spoolFile) draftOut {
 }
 
 // audit logs one write: no addresses and no subject (spec 7.8).
-func audit(ctx context.Context, event string, in drafts.Input, attachments int, size int64) {
-	logging.From(ctx).Info(event, "draft_id", in.DraftID,
-		"recipients", len(in.To)+len(in.Cc)+len(in.Bcc), "attachments", attachments, "size", size)
+// audit logs one draft write with the fields spec §7.8 asks for: draft id,
+// UIDs, file names and sizes. extra carries the UID pairs.
+func audit(ctx context.Context, event, folder string, in drafts.Input, files []spoolFile, size int64, extra ...any) {
+	names := make([]string, 0, len(files))
+	sizes := make([]int64, 0, len(files))
+	for _, f := range files {
+		names = append(names, f.name)
+		sizes = append(sizes, f.size)
+	}
+	args := append([]any{"draft_id", in.DraftID, "folder", folder}, extra...)
+	args = append(args, "recipients", len(in.To)+len(in.Cc)+len(in.Bcc), "attachments", len(files),
+		"filenames", names, "file_sizes", sizes, "size", size)
+	logging.From(ctx).Info(event, args...)
 }
 
 // defaultFrom is the login name when it is an email address, else empty
