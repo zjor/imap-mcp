@@ -1,0 +1,5 @@
+apiVersion: v2
+name: imap-mcp
+description: Stateless MCP server that gives AI agents safe access to an IMAP mailbox
+type: application
+version: 0.1.0
