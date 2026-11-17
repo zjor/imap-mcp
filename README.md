@@ -199,7 +199,7 @@ Client-side variables, read by `scripts/imap-mcp-headers.sh` and `scripts/imap-m
 | `IMAP_HOST` | optional; only when the server allows more than one host |
 | `IMAP_MCP_ENV_FILE` | optional; path of the env file, default `./.env.local` |
 
-Endpoints: `/mcp` (MCP Streamable HTTP, stateless), `/attachments/{id}`, `/drafts/{draft_id}/attachments`, and `/healthz` (no auth). Every response has an `X-Request-Id` header; tool errors carry the same `request_id`.
+Endpoints: `/mcp` (MCP Streamable HTTP, stateless), `/attachments/{id}`, `/drafts/{draft_id}/attachments`, and `/healthz` (no auth). Every response has an `X-Request-Id` header. Errors from tools and from the HTTP endpoints, including auth rejections (401 `auth_failed`, 403 `host_not_allowed`), use one JSON shape: `{"error":{"code","message","request_id"}}`.
 
 ## Tools
 

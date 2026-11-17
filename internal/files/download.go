@@ -14,12 +14,12 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/zjor/imap-mcp/internal/apierr"
 	"github.com/zjor/imap-mcp/internal/auth"
 	"github.com/zjor/imap-mcp/internal/ids"
 	"github.com/zjor/imap-mcp/internal/imapsafe"
 	"github.com/zjor/imap-mcp/internal/logging"
 	"github.com/zjor/imap-mcp/internal/mailparse"
-	"github.com/zjor/imap-mcp/internal/tools"
 )
 
 const copyBufSize = 32 << 10
@@ -163,10 +163,7 @@ func fail(ctx context.Context, w http.ResponseWriter, kind string, err error, at
 }
 
 func writeError(ctx context.Context, w http.ResponseWriter, status int, code, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(status)
-	_, _ = w.Write(tools.ErrorJSON(ctx, code, msg))
+	apierr.Write(ctx, w, status, code, msg)
 }
 
 // contentDisposition builds the attachment header with an RFC 5987
