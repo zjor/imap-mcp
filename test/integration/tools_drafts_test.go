@@ -556,3 +556,59 @@ func TestDraftWrites_LeaveForeignDraftsAlone(t *testing.T) {
 		t.Error("foreign draft got \\Deleted")
 	}
 }
+
+// embeddedMail has a text body (part 1), an attached email (part 2) and a
+// Latin-2 text file (part 3).
+const embeddedInner = "From: Dana <dana@example.com>\r\nSubject: =?utf-8?q?P=C5=AFvodn=C3=AD?=\r\n" +
+	"Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\nDobrý den, Žluťoučký kůň.\r\n"
+
+func embeddedMail() []byte {
+	return []byte("From: Alice <alice@example.com>\r\nTo: Bob <bob@example.com>\r\n" +
+		"Subject: Fwd chain\r\nDate: Mon, 16 Nov 2026 12:00:00 +0000\r\nMIME-Version: 1.0\r\n" +
+		"Content-Type: multipart/mixed; boundary=\"b1\"\r\n\r\n" +
+		"--b1\r\nContent-Type: text/plain\r\n\r\nSee below.\r\n" +
+		"--b1\r\nContent-Type: message/rfc822\r\nContent-Disposition: attachment; filename=\"orig.eml\"\r\n\r\n" + embeddedInner +
+		"\r\n--b1\r\nContent-Type: text/plain; charset=iso-8859-2\r\nContent-Disposition: attachment; filename=\"l2.txt\"\r\n" +
+		"Content-Transfer-Encoding: 8bit\r\n\r\n\xb1\xe8\r\n--b1--\r\n")
+}
+
+func TestEmbeddedEmail_DownloadAndForward(t *testing.T) {
+	c := freshUser(t)
+	uid := seedRaw(t, c, "INBOX", embeddedMail())[0]
+	srv := startServer(t)
+
+	// Download returns the attached email byte for byte.
+	resp := srv.download(t, "GET", attachmentID(t, c, uid), authHeaders(c))
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 || string(body) != embeddedInner {
+		t.Fatalf("download: status %d body %q", resp.StatusCode, body)
+	}
+	if ct := resp.Header.Get("X-Original-Content-Type"); ct != "message/rfc822" {
+		t.Errorf("X-Original-Content-Type = %q", ct)
+	}
+
+	// Forward keeps the email as message/rfc822 (not base64) and the
+	// text file's charset.
+	cs := srv.connect(t, c)
+	var d draftOut
+	mustCall(t, cs, "create_draft", map[string]any{"mode": "forward", "in_reply_to": firstID(t, cs),
+		"to": []string{"carol@example.com"}, "body_text": "FYI"}, &d)
+	_, raw := ownDraftRaw(t, c, d.DraftID)
+	for _, want := range []string{
+		"Content-Transfer-Encoding: 8bit\r\nContent-Disposition: attachment; filename=orig.eml\r\nContent-Type: message/rfc822\r\n\r\n" + embeddedInner,
+		"Content-Type: text/plain; charset=iso-8859-2\r\n\r\nseg=\r\n", // base64 of 0xb1 0xe8
+	} {
+		if !bytes.Contains(raw, []byte(want)) {
+			t.Errorf("draft lacks %q:\n%s", want, raw)
+		}
+	}
+	got := draftAttachments(t, raw)
+	// The mail reader decodes text parts to UTF-8, so l2.txt reads "ąč".
+	if string(got["orig.eml"]) != embeddedInner || string(got["l2.txt"]) != "ąč" {
+		t.Errorf("attachments = %q", got)
+	}
+	p := parseDraft(t, raw)
+	if len(p.Attachments) != 2 || p.Attachments[1].Charset != "iso-8859-2" {
+		t.Errorf("parsed attachments = %+v", p.Attachments)
+	}
+}

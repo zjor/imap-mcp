@@ -38,8 +38,10 @@ type Attachment struct {
 	Part        []int
 	Filename    string
 	ContentType string
-	Size        int64
-	Inline      bool
+	// Charset is the charset parameter of a text/* part, else empty.
+	Charset string
+	Size    int64
+	Inline  bool
 }
 
 type Parsed struct {
@@ -125,15 +127,18 @@ func (w *walker) walkMultipart(e *message.Entity, path []int, depth int) {
 }
 
 func (w *walker) leaf(e *message.Entity, path []int) {
-	mt, _, err := e.Header.ContentType()
+	mt, tparams, err := e.Header.ContentType()
 	if err != nil || mt == "" {
 		mt = "text/plain"
 	}
 	disp, dparams, _ := e.Header.ContentDisposition()
 	filename := dparams["filename"]
 	if filename == "" {
-		_, tparams, _ := e.Header.ContentType()
 		filename = tparams["name"]
+	}
+	var charset string
+	if strings.HasPrefix(mt, "text/") {
+		charset = tparams["charset"]
 	}
 	isAttachment := disp == "attachment" || filename != ""
 	if !isAttachment && (mt == "text/plain" || mt == "text/html") {
@@ -153,6 +158,7 @@ func (w *walker) leaf(e *message.Entity, path []int) {
 		Part:        path,
 		Filename:    CleanFilename(filename),
 		ContentType: mt,
+		Charset:     charset,
 		Size:        n,
 		Inline:      disp == "inline" || (disp == "" && e.Header.Get("Content-ID") != ""),
 	})

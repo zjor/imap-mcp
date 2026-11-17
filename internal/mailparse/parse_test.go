@@ -281,3 +281,16 @@ func TestParse_MalformedHeaderIsUnparseable(t *testing.T) {
 		t.Errorf("parsed = %+v, want empty", p)
 	}
 }
+
+func TestParse_AttachmentCharset(t *testing.T) {
+	body := "From: a@example.com\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nbody\r\n" +
+		"--b\r\nContent-Type: text/plain; charset=iso-8859-2\r\nContent-Disposition: attachment; filename=a.txt\r\n\r\n\xb1\r\n" +
+		"--b\r\nContent-Type: application/pdf; charset=utf-8\r\nContent-Disposition: attachment; filename=a.pdf\r\n\r\nx\r\n--b--\r\n"
+	p, err := Parse(strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Attachments) != 2 || p.Attachments[0].Charset != "iso-8859-2" || p.Attachments[1].Charset != "" {
+		t.Errorf("attachments = %+v", p.Attachments)
+	}
+}

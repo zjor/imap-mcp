@@ -177,7 +177,7 @@ func createDraft(ctx context.Context, s *imapsafe.Session, deps Deps, in createD
 				return nil, 0, err
 			}
 			for _, a := range atts {
-				if err := sp.add(ctx, s, ids.AttachmentID{MessageID: mid, Part: a.Part}, a.Filename, a.ContentType); err != nil {
+				if err := sp.add(ctx, s, ids.AttachmentID{MessageID: mid, Part: a.Part}, a.Filename, partType(a)); err != nil {
 					return nil, 0, err
 				}
 			}
