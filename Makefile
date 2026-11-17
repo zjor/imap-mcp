@@ -16,6 +16,7 @@ lint:
 # Helm chart: lint and render checks, no cluster needed.
 chart-check:
 	bash deploy/scripts/check-chart.sh
+	bash deploy/scripts/test-ci-validate.sh
 
 # Pretty logs with pplog (see pplog.env) when it is installed, raw JSON otherwise.
 .PHONY: run
