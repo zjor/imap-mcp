@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"sync"
 	"time"
 )
 
@@ -18,6 +19,7 @@ type ctxKey int
 const (
 	loggerKey ctxKey = iota
 	requestIDKey
+	accessKey
 )
 
 var (
@@ -45,6 +47,30 @@ func From(ctx context.Context) *slog.Logger {
 		return l
 	}
 	return slog.Default()
+}
+
+// accessLogger holds the logger for the http.request line. Inner
+// middleware (auth) replaces it so the line carries user, token_id and
+// imap_host too.
+type accessLogger struct {
+	mu sync.Mutex
+	l  *slog.Logger
+}
+
+// SetAccessLogger replaces the logger RequestMiddleware uses for the
+// http.request line of this request. No-op outside RequestMiddleware.
+func SetAccessLogger(ctx context.Context, l *slog.Logger) {
+	if a, ok := ctx.Value(accessKey).(*accessLogger); ok {
+		a.mu.Lock()
+		a.l = l
+		a.mu.Unlock()
+	}
+}
+
+func (a *accessLogger) get() *slog.Logger {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.l
 }
 
 // RequestID returns the request id in ctx, or "" when there is none.
@@ -126,26 +152,39 @@ func RequestMiddleware(base *slog.Logger) func(http.Handler) http.Handler {
 			}
 			w.Header().Set("X-Request-Id", id)
 
+			access := &accessLogger{l: l}
 			ctx := context.WithValue(With(r.Context(), l), requestIDKey, id)
+			ctx = context.WithValue(ctx, accessKey, access)
 			body := &countingBody{ReadCloser: r.Body}
 			r = r.WithContext(ctx)
 			r.Body = body
 			sw := &statusWriter{ResponseWriter: w}
 
+			// Log in a defer so an aborted request (panic with
+			// http.ErrAbortHandler) is logged too. The panic goes on.
+			defer func() {
+				rec := recover()
+				status := sw.status
+				if status == 0 {
+					status = http.StatusOK
+				}
+				attrs := []any{
+					"method", r.Method,
+					"path", r.URL.Path,
+					"status", status,
+					"duration_ms", time.Since(start).Milliseconds(),
+					"bytes_in", body.n,
+					"bytes_out", sw.n,
+				}
+				if rec != nil {
+					attrs = append(attrs, "aborted", true)
+				}
+				access.get().Info("http.request", attrs...)
+				if rec != nil {
+					panic(rec)
+				}
+			}()
 			next.ServeHTTP(sw, r)
-
-			status := sw.status
-			if status == 0 {
-				status = http.StatusOK
-			}
-			l.Info("http.request",
-				"method", r.Method,
-				"path", r.URL.Path,
-				"status", status,
-				"duration_ms", time.Since(start).Milliseconds(),
-				"bytes_in", body.n,
-				"bytes_out", sw.n,
-			)
 		})
 	}
 }

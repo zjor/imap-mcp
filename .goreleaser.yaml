@@ -1,0 +1,45 @@
+# GoReleaser v2. Release: push a tag v*, CI runs `goreleaser release --clean`.
+# Local check: go run github.com/goreleaser/goreleaser/v2@v2.20.2 check
+version: 2
+
+project_name: imap-mcp
+
+builds:
+  - id: imap-mcp
+    main: ./cmd/imap-mcp
+    binary: imap-mcp
+    env:
+      - CGO_ENABLED=0
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags: ["-s -w"]
+
+archives:
+  - id: default
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files: [LICENSE, README.md, .env.example, scripts/*, examples/*]
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+# The image is built from the repo Dockerfile (multi-stage, distroless,
+# non-root), so `docker build .` and the release image are the same.
+dockers_v2:
+  - id: image
+    ids: [imap-mcp]
+    images: ["ghcr.io/zjor/imap-mcp"]
+    tags: ["{{ .Version }}", "{{ if not .Prerelease }}latest{{ end }}"]
+    dockerfile: Dockerfile
+    platforms: [linux/amd64, linux/arm64]
+    extra_files: [go.mod, go.sum, cmd, internal]
+    labels:
+      org.opencontainers.image.source: "{{ .GitURL }}"
+      org.opencontainers.image.version: "{{ .Version }}"
+      org.opencontainers.image.revision: "{{ .FullCommit }}"
+      org.opencontainers.image.licenses: MIT
+
+changelog:
+  sort: asc

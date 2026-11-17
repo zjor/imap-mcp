@@ -1,0 +1,35 @@
+From: a@example.com
+Subject: nested
+Content-Type: multipart/mixed; boundary="M"
+
+--M
+Content-Type: multipart/alternative; boundary="A"
+
+--A
+Content-Type: text/plain
+
+plain
+--A
+Content-Type: text/html
+
+<p>html</p>
+--A--
+--M
+Content-Type: application/pdf; name="a.pdf"
+Content-Disposition: attachment; filename="a.pdf"
+Content-Transfer-Encoding: base64
+
+JVBERi0xLjQK
+--M
+Content-Type: message/rfc822
+
+From: b@example.com
+Subject: inner
+Content-Type: multipart/mixed; boundary="X"
+
+--X
+Content-Type: text/plain
+
+x
+--X--
+--M--

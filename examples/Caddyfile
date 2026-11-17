@@ -1,0 +1,43 @@
+# Caddy in front of imap-mcp: Caddy ends TLS (automatic certificates) and
+# forwards to imap-mcp over plain HTTP on the same host.
+#
+# imap-mcp runs with:
+#   IMAP_MCP_LISTEN=127.0.0.1:8787
+#   IMAP_MCP_PUBLIC_URL=https://mail-mcp.example.com
+# (In Docker on a shared network, use IMAP_MCP_LISTEN=0.0.0.0:8787,
+#  IMAP_MCP_INSECURE_HTTP=true and `reverse_proxy imap-mcp:8787`.)
+#
+# Every request carries the IMAP password in a header, so Caddy must never
+# log request headers. Caddy's default logger writes the full request,
+# headers included, in error entries (for example "dial tcp ... connection
+# refused" when imap-mcp is down). It hides Authorization and Cookie, but
+# not X-IMAP-Password. The global block below removes the request headers
+# from every entry of the default logger. This site has no access log
+# ("log" directive). If you add one, give it the same filter.
+
+{
+	log default {
+		format filter {
+			request>headers delete
+		}
+	}
+}
+
+mail-mcp.example.com {
+	# Uploads: keep at or above IMAP_MCP_MAX_UPLOAD plus multipart overhead.
+	request_body {
+		max_size 30MB
+	}
+
+	reverse_proxy 127.0.0.1:8787 {
+		# Downloads stream; do not buffer them.
+		flush_interval -1
+	}
+
+	# Optional access log. Uncomment only together with the filter.
+	# log {
+	# 	format filter {
+	# 		request>headers delete
+	# 	}
+	# }
+}

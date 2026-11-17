@@ -1,0 +1,17 @@
+From: a@example.com
+Subject: fwd
+Content-Type: multipart/mixed; boundary="B"
+
+--B
+Content-Type: text/plain
+
+See attached.
+--B
+Content-Type: message/rfc822
+
+From: b@example.com
+Subject: inner
+Content-Type: text/plain
+
+inner body
+--B--
