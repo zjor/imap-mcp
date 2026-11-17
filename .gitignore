@@ -2,3 +2,5 @@
 dist/
 .superpowers/
 test/integration/certs/
+.idea/
+bin/
