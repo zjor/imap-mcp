@@ -106,7 +106,7 @@ The server runs on your machine, on `127.0.0.1`. Plain HTTP is allowed on loopba
 
 ## Production setup
 
-Clients always talk to imap-mcp over HTTPS. Run the Docker image behind a TLS reverse proxy or a Kubernetes ingress. Set these variables:
+Clients always talk to imap-mcp over HTTPS. Run the Docker image behind a TLS reverse proxy or a Kubernetes ingress. For Kubernetes, [deploy/README.md](deploy/README.md) has a Helm chart and a CD pipeline. Set these variables:
 
 - `IMAP_MCP_INSECURE_HTTP=true`, because the server listens on `0.0.0.0` inside the container. Only the proxy may reach the port.
 - `IMAP_MCP_IMAP_HOSTS`, `IMAP_MCP_ACCESS_TOKENS` (one token per person), and `IMAP_MCP_PUBLIC_URL=https://<your-domain>`.
