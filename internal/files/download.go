@@ -4,7 +4,6 @@ package files
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -149,15 +148,15 @@ func fail(ctx context.Context, w http.ResponseWriter, kind string, err error, at
 		status = http.StatusForbidden
 	case "too_large":
 		status = http.StatusRequestEntityTooLarge
+	case "unsupported":
+		status = http.StatusNotImplemented
 	}
 	log := logging.From(ctx)
 	switch status {
 	case http.StatusUnauthorized, http.StatusForbidden, http.StatusConflict, http.StatusRequestEntityTooLarge:
 		log.Warn(kind+".rejected", append([]any{"status", status, "code", code}, attrs...)...)
 	case http.StatusBadGateway:
-		if !errors.Is(err, imapsafe.ErrUnsupported) {
-			log.Error(kind+".failed", append([]any{"error", err.Error()}, attrs...)...)
-		}
+		log.Error(kind+".failed", append([]any{"error", err.Error()}, attrs...)...)
 	}
 	writeError(ctx, w, status, code, msg)
 }

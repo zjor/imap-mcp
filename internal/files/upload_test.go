@@ -1,10 +1,12 @@
 package files
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"mime/multipart"
 	"net"
@@ -118,6 +120,7 @@ func TestFail_Status(t *testing.T) {
 		{imapsafe.ErrStale, http.StatusConflict, "level=WARN msg=test.rejected"},
 		{errors.New("boom"), http.StatusBadGateway, "level=ERROR msg=test.failed"},
 		{badArg("x"), http.StatusBadRequest, ""},
+		{imapsafe.ErrUnsupported, http.StatusNotImplemented, ""},
 	}
 	for _, tt := range tests {
 		var buf bytes.Buffer
@@ -172,6 +175,16 @@ func TestUpload_StalledBodyAborted(t *testing.T) {
 	case <-done:
 	case <-time.After(10 * time.Second):
 		t.Fatal("stalled upload was not aborted")
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("no response: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestTimeout || !strings.Contains(string(body), `"code":"bad_argument"`) {
+		t.Errorf("status %d body %s", resp.StatusCode, body)
 	}
 	entries, err := os.ReadDir(tmp)
 	if err != nil {
