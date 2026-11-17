@@ -1,0 +1,51 @@
+# Deployer identity for GitHub Actions CD.
+# Applied once by hand with an admin kubeconfig:
+#   kubectl --context midgard create namespace imap-mcp
+#   kubectl --context midgard apply -f deploy/cd/rbac.yaml
+# Namespace-scoped: it can roll out the Helm release in imap-mcp and nothing
+# else. Helm needs secrets (release storage and imap-mcp-secrets), the chart's
+# resources (Deployment, Service, Ingress) and pods/events for --atomic.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: github-deployer
+  namespace: imap-mcp
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: github-deployer-token
+  namespace: imap-mcp
+  annotations:
+    kubernetes.io/service-account.name: github-deployer
+type: kubernetes.io/service-account-token
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: github-deployer
+  namespace: imap-mcp
+rules:
+  - apiGroups: [""]
+    resources: [secrets, configmaps, services, serviceaccounts, pods, pods/log, events]
+    verbs: ["*"]
+  - apiGroups: [apps]
+    resources: [deployments, replicasets]
+    verbs: ["*"]
+  - apiGroups: [networking.k8s.io]
+    resources: [ingresses]
+    verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: github-deployer
+  namespace: imap-mcp
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: github-deployer
+subjects:
+  - kind: ServiceAccount
+    name: github-deployer
+    namespace: imap-mcp
